@@ -127,6 +127,10 @@ fn parse_sgr_mouse(stdin: &mut io::Stdin) -> Option<InputEvent> {
     }
 
     let s = String::from_utf8(seq).ok()?;
+    parse_sgr_mouse_event(&s)
+}
+
+fn parse_sgr_mouse_event(s: &str) -> Option<InputEvent> {
     let is_press = s.ends_with('M');
     let body = &s[..s.len().saturating_sub(1)];
     let mut parts = body.split(';');
@@ -140,11 +144,30 @@ fn parse_sgr_mouse(stdin: &mut io::Stdin) -> Option<InputEvent> {
     }
 
     match cb {
-        0 => Some(InputEvent::Mouse(MouseEvent::LeftClick {
-            row: cy.saturating_sub(1),
-        })),
+        // Preserve reported row and let view hit-testing account for header rows.
+        0 => Some(InputEvent::Mouse(MouseEvent::LeftClick { row: cy })),
         64 => Some(InputEvent::Mouse(MouseEvent::ScrollUp)),
         65 => Some(InputEvent::Mouse(MouseEvent::ScrollDown)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_sgr_mouse_event, InputEvent, MouseEvent};
+
+    #[test]
+    fn sgr_left_click_preserves_reported_row() {
+        let event = parse_sgr_mouse_event("0;10;7M");
+        assert!(matches!(
+            event,
+            Some(InputEvent::Mouse(MouseEvent::LeftClick { row: 7 }))
+        ));
+    }
+
+    #[test]
+    fn sgr_release_is_ignored() {
+        let event = parse_sgr_mouse_event("0;10;7m");
+        assert!(event.is_none());
     }
 }
