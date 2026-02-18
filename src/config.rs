@@ -85,7 +85,7 @@ impl Config {
                     let home = std::env::var("HOME").unwrap_or_default();
                     format!("{}/.config", home)
                 });
-                PathBuf::from(xdg).join("news").join("config.toml")
+                PathBuf::from(xdg).join("tn").join("config.toml")
             }
         };
 

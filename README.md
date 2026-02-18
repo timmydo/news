@@ -20,8 +20,8 @@ cargo fmt -- --check
 
 Default config path:
 
-- `$XDG_CONFIG_HOME/news/config.toml`
-- or `~/.config/news/config.toml`
+- `$XDG_CONFIG_HOME/tn/config.toml`
+- or `~/.config/tn/config.toml`
 
 Example:
 
@@ -70,4 +70,4 @@ url = "https://news.ycombinator.com/rss"
 
 ## Cache
 
-- Database: `~/.cache/news/news.redb`
+- Database: `~/.cache/tn/tn.redb`

@@ -4,7 +4,7 @@ This file provides guidance for coding agents working in this repository.
 
 ## Project Overview
 
-**news** is a Rust TUI news reader that fetches RSS/Atom feeds, caches articles
+**tn** (Timmy's News) is a Rust TUI news reader that fetches RSS/Atom feeds, caches articles
 in a local database, and presents them in a terminal interface. It is modeled
 after [tmc](../tmc) (Timmy's Mail Console) but reads news feeds instead of JMAP
 mail.
@@ -32,7 +32,7 @@ instead).
 
 ## Configuration
 
-Default path: `$XDG_CONFIG_HOME/news/config.toml` (or `~/.config/news/config.toml`).
+Default path: `$XDG_CONFIG_HOME/tn/config.toml` (or `~/.config/tn/config.toml`).
 
 ```toml
 [ui]
@@ -112,7 +112,7 @@ Follows the same multi-threaded pattern as tmc:
 
 ### Cache (redb)
 
-Location: `~/.cache/news/news.redb`
+Location: `~/.cache/tn/tn.redb`
 
 Tables:
 - `articles` — keyed by hash(link+title), stores serialized article (title, link, description, content, published date, feed name, read flag).

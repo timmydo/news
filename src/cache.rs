@@ -28,7 +28,7 @@ impl Cache {
             let home = std::env::var("HOME").unwrap_or_default();
             format!("{}/.cache", home)
         });
-        PathBuf::from(xdg).join("news").join("news.redb")
+        PathBuf::from(xdg).join("tn").join("tn.redb")
     }
 
     pub fn clear() {

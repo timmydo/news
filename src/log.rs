@@ -12,7 +12,7 @@ pub fn news_log_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
         format!("{}/.cache", home)
     });
-    PathBuf::from(xdg).join("news").join("news.log")
+    PathBuf::from(xdg).join("tn").join("news.log")
 }
 
 pub fn debug_log_path() -> PathBuf {
@@ -20,7 +20,7 @@ pub fn debug_log_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_default();
         format!("{}/.cache", home)
     });
-    PathBuf::from(xdg).join("news").join("debug.log")
+    PathBuf::from(xdg).join("tn").join("debug.log")
 }
 
 pub fn init() -> Result<(), String> {
