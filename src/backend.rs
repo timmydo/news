@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::feed::{Article, FeedMeta};
+use crate::feed::{now_local_datetime_string, Article, FeedMeta};
 
 pub enum BackendCommand {
     FetchAllFeeds,
@@ -117,7 +117,7 @@ fn backend_loop(
 fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<BackendResponse>) {
     match crate::feed::fetch_feed(url, name) {
         Ok((title, articles)) => {
-            let fetched_at = now_local_timestamp();
+            let fetched_at = now_local_datetime_string();
             cache.put_feed_meta(&FeedMeta {
                 url: url.to_string(),
                 title,
@@ -163,29 +163,6 @@ fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<B
                 feed_url: url.to_string(),
                 error: e,
             });
-        }
-    }
-}
-
-fn now_local_timestamp() -> String {
-    unsafe {
-        let now = libc::time(std::ptr::null_mut());
-        let mut tm = std::mem::zeroed::<libc::tm>();
-        if libc::localtime_r(&now, &mut tm).is_null() {
-            return "unknown".to_string();
-        }
-        let mut buf = [0u8; 32];
-        let fmt = b"%Y-%m-%d %H:%M:%S\0";
-        let n = libc::strftime(
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-            fmt.as_ptr() as *const libc::c_char,
-            &tm,
-        );
-        if n == 0 {
-            "unknown".to_string()
-        } else {
-            String::from_utf8_lossy(&buf[..n as usize]).to_string()
         }
     }
 }

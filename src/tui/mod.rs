@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::backend::{BackendCommand, BackendResponse};
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::feed::Article;
+use crate::feed::{datetime_sort_key, normalize_datetime_to_local, Article};
 use crate::keybindings;
 
 use input::{InputEvent, Key, MouseEvent};
@@ -97,6 +97,7 @@ struct App {
     status: String,
     last_updated: Option<String>,
     last_size: (usize, usize),
+    page_size: usize,
     theme: UiTheme,
     quitting: bool,
     pending_redraw: bool,
@@ -119,6 +120,7 @@ impl App {
     fn new(config: &Config, cache: &Cache, offline: bool) -> Self {
         let mut feeds = Vec::with_capacity(config.feeds.len());
         let mut last_updated = None;
+        let mut last_updated_ts = None;
         for feed in &config.feeds {
             let hashes = cache.get_feed_index(&feed.url).unwrap_or_default();
             let unread = hashes
@@ -126,12 +128,11 @@ impl App {
                 .filter(|hash| cache.get_article(hash).map(|a| !a.read).unwrap_or(false))
                 .count();
             if let Some(meta) = cache.get_feed_meta(&feed.url) {
-                if last_updated
-                    .as_ref()
-                    .map(|current: &String| meta.last_fetched > *current)
-                    .unwrap_or(true)
-                {
-                    last_updated = Some(meta.last_fetched);
+                if let Some(ts) = datetime_sort_key(Some(&meta.last_fetched)) {
+                    if last_updated_ts.map(|current| ts > current).unwrap_or(true) {
+                        last_updated_ts = Some(ts);
+                        last_updated = normalize_datetime_to_local(&meta.last_fetched);
+                    }
                 }
             }
             feeds.push(FeedRow {
@@ -160,6 +161,7 @@ impl App {
             },
             last_updated,
             last_size: (80, 24),
+            page_size: config.ui.page_size.max(1),
             theme: UiTheme::from_config(&config.theme),
             quitting: false,
             pending_redraw: true,
@@ -712,7 +714,7 @@ impl App {
                 article
                     .published
                     .as_deref()
-                    .map(views::strip_newlines)
+                    .and_then(normalize_datetime_to_local)
                     .unwrap_or_else(|| "No date".to_string()),
                 views::strip_newlines(&article.title)
             );
@@ -771,7 +773,11 @@ impl App {
         }
 
         let footer = match article.published.as_ref() {
-            Some(published) => format!("{} | {}", article.link, published),
+            Some(published) => format!(
+                "{} | {}",
+                article.link,
+                normalize_datetime_to_local(published).unwrap_or_else(|| "No date".to_string())
+            ),
             None => article.link.clone(),
         };
         lines.push(self.style_status(views::truncate(&footer, width)));
@@ -792,7 +798,7 @@ impl App {
             lines.push(views::truncate(&format!("Article view: {}", item), width));
         }
         lines.push(views::truncate(
-            "Mouse: click to select rows, wheel scroll in article view",
+            "Mouse: feed click selects, article click opens, wheel scrolls lists/view",
             width,
         ));
 
@@ -867,6 +873,11 @@ impl App {
                 }
             }
         }
+        self.articles.sort_by(|a, b| {
+            let a_ts = datetime_sort_key(a.published.as_deref()).unwrap_or(i64::MIN);
+            let b_ts = datetime_sort_key(b.published.as_deref()).unwrap_or(i64::MIN);
+            b_ts.cmp(&a_ts).then_with(|| a.title.cmp(&b.title))
+        });
         let visible_len = self.filtered_article_indices().len();
         if self.selected_article >= visible_len {
             self.selected_article = visible_len.saturating_sub(1);
@@ -939,11 +950,11 @@ impl App {
     }
 
     fn feed_list_rows(&self) -> usize {
-        self.last_size.1.saturating_sub(3)
+        self.last_size.1.saturating_sub(3).min(self.page_size)
     }
 
     fn article_list_rows(&self) -> usize {
-        self.last_size.1.saturating_sub(3)
+        self.last_size.1.saturating_sub(3).min(self.page_size)
     }
 }
 

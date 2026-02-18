@@ -1,6 +1,9 @@
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
+
+pub const DISPLAY_DATETIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 /// A normalized article parsed from an RSS or Atom feed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,11 +101,7 @@ fn parse_rss(xml: &str, feed_name: &str) -> Result<(String, Vec<Article>), Strin
                         link,
                         description: item_description.trim().to_string(),
                         content: item_content.trim().to_string(),
-                        published: if item_pub_date.is_empty() {
-                            None
-                        } else {
-                            Some(item_pub_date.trim().to_string())
-                        },
+                        published: normalize_optional_datetime(&item_pub_date),
                         feed_name: feed_name.to_string(),
                         read: false,
                     });
@@ -251,11 +250,7 @@ fn parse_atom(xml: &str, feed_name: &str) -> Result<(String, Vec<Article>), Stri
                         link,
                         description: entry_summary.trim().to_string(),
                         content: entry_content.trim().to_string(),
-                        published: if entry_published.is_empty() {
-                            None
-                        } else {
-                            Some(entry_published.trim().to_string())
-                        },
+                        published: normalize_optional_datetime(&entry_published),
                         feed_name: feed_name.to_string(),
                         read: false,
                     });
@@ -344,6 +339,63 @@ pub fn article_hash(title: &str, link: &str) -> String {
     title.hash(&mut hasher);
     link.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+pub fn now_local_datetime_string() -> String {
+    Local::now().format(DISPLAY_DATETIME_FORMAT).to_string()
+}
+
+pub fn normalize_datetime_to_local(input: &str) -> Option<String> {
+    parse_datetime_to_local(input).map(|dt| dt.format(DISPLAY_DATETIME_FORMAT).to_string())
+}
+
+pub fn datetime_sort_key(input: Option<&str>) -> Option<i64> {
+    parse_datetime_to_local(input?).map(|dt| dt.timestamp())
+}
+
+fn normalize_optional_datetime(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        normalize_datetime_to_local(trimmed)
+    }
+}
+
+fn parse_datetime_to_local(input: &str) -> Option<DateTime<Local>> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Local));
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc2822(s) {
+        return Some(dt.with_timezone(&Local));
+    }
+
+    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(s, fmt) {
+            if let Some(local) = Local
+                .from_local_datetime(&naive)
+                .single()
+                .or_else(|| Local.from_local_datetime(&naive).earliest())
+            {
+                return Some(local);
+            }
+        }
+    }
+
+    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let naive = date.and_hms_opt(0, 0, 0)?;
+        return Local
+            .from_local_datetime(&naive)
+            .single()
+            .or_else(|| Local.from_local_datetime(&naive).earliest());
+    }
+
+    None
 }
 
 #[cfg(test)]

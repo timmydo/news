@@ -10,7 +10,11 @@ pub const FEED_LIST: &[&str] = &[
 pub const ARTICLE_LIST: &[&str] = &[
     "j/k or arrows: move",
     "n/p: next/prev",
+    "PgUp/PgDn: move by page",
+    "Home/End: jump to top/bottom",
     "Enter: open article",
+    "Mouse wheel: move selection",
+    "Mouse click: open article",
     "u: toggle read",
     "o: open link",
 ];
