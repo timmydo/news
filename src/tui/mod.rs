@@ -689,6 +689,10 @@ impl App {
         lines.push(self.style_header(views::truncate(&header, width)));
 
         let visible = self.filtered_article_indices();
+        let show_feed_source = matches!(
+            self.selected_feed_scope.as_ref(),
+            Some(FeedScope::All | FeedScope::Unread)
+        );
         let list_rows = height.saturating_sub(2);
         let start = self
             .selected_article
@@ -707,17 +711,24 @@ impl App {
                 " "
             };
             let unread = if article.read { " " } else { "*" };
-            let line = format!(
-                "{}{} [{}] {}",
-                marker,
-                unread,
-                article
-                    .published
-                    .as_deref()
-                    .and_then(normalize_datetime_to_local)
-                    .unwrap_or_else(|| "No date".to_string()),
-                views::strip_newlines(&article.title)
-            );
+            let published = article
+                .published
+                .as_deref()
+                .and_then(normalize_datetime_to_local)
+                .unwrap_or_else(|| "No date".to_string());
+            let title = views::strip_newlines(&article.title);
+            let line = if show_feed_source {
+                format!(
+                    "{}{} [{}] [{}] {}",
+                    marker,
+                    unread,
+                    published,
+                    views::strip_newlines(&article.feed_name),
+                    title
+                )
+            } else {
+                format!("{}{} [{}] {}", marker, unread, published, title)
+            };
             let line = views::truncate(&line, width);
             if list_idx == self.selected_article {
                 lines.push(self.style_selection(line, !article.read));

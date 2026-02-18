@@ -6,20 +6,20 @@
 - [x] Implement periodic background feed refresh (sync_interval_secs)
 
 ## TUI
-- [ ] Raw terminal setup and ANSI drawing (`tui/screen.rs`)
-- [ ] Key and mouse input parser (`tui/input.rs`)
-- [ ] Event loop and terminal management (`tui/mod.rs`)
-- [ ] Feed list view with unread counts
-- [ ] Article list view with search
-- [ ] Article view with plain text rendering (html2text)
-- [ ] Help view with keybinding reference
-- [ ] Mouse support (click, wheel scrolling)
+- [x] Raw terminal setup and ANSI drawing (`tui/screen.rs`)
+- [x] Key and mouse input parser (`tui/input.rs`)
+- [x] Event loop and terminal management (`tui/mod.rs`)
+- [x] Feed list view with unread counts
+- [x] Article list view with search
+- [x] Article view with plain text rendering (html2text)
+- [x] Help view with keybinding reference
+- [x] Mouse support (click, wheel scrolling)
 
 ## Features
-- [ ] Open article link in `$BROWSER`
-- [ ] Mark read/unread per article and per feed
-- [ ] Offline mode (browse cached articles only)
-- [ ] Logging infrastructure (`--log`)
+- [x] Open article link in `$BROWSER`
+- [x] Mark read/unread per article and per feed
+- [x] Offline mode (browse cached articles only)
+- [x] Logging infrastructure (`--log`)
 
 ## Future
 - [ ] Generate summary/digest file from cached articles (similar to `rss_digest.py` but reading from redb and producing a standalone HTML or text summary)

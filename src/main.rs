@@ -2,7 +2,9 @@ mod backend;
 mod cache;
 mod config;
 mod feed;
+mod keybindings;
 mod log;
+mod tui;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -19,6 +21,25 @@ fn main() {
         return;
     }
 
+    if args.iter().any(|a| a == "--log") {
+        let path = log::log_path();
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                print!("{}", contents);
+            }
+            Err(e) => {
+                eprintln!("No log at {} ({})", path.display(), e);
+            }
+        }
+        return;
+    }
+
+    if let Err(e) = log::init() {
+        eprintln!("Failed to initialize logging: {}", e);
+    } else {
+        log::info("news starting");
+    }
+
     let config_path = args
         .iter()
         .find_map(|a| a.strip_prefix("--config="))
@@ -27,6 +48,7 @@ fn main() {
     let config = match config::Config::load(config_path.as_deref()) {
         Ok(c) => c,
         Err(e) => {
+            log::error(format!("config load failed: {}", e));
             eprintln!("Error loading config: {}", e);
             std::process::exit(1);
         }
@@ -34,43 +56,27 @@ fn main() {
 
     if args.iter().any(|a| a == "--clear-cache") {
         cache::Cache::clear();
+        log::info("cache cleared");
         eprintln!("Cache cleared.");
         return;
     }
 
     let offline = args.iter().any(|a| a == "--offline");
+    let cache = match cache::Cache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            log::error(format!("failed to open cache: {}", e));
+            eprintln!("Failed to open cache: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let (cmd_tx, resp_rx) = backend::spawn(&config);
-
-    if !offline {
-        cmd_tx.send(backend::BackendCommand::FetchAllFeeds).unwrap();
+    if let Err(e) = tui::run(&config, &cache, &cmd_tx, &resp_rx, offline) {
+        log::error(format!("tui error: {}", e));
+        eprintln!("TUI error: {}", e);
     }
-
-    // Process backend responses until all feeds are fetched
-    let feed_count = config.feeds.len();
-    let mut done = 0;
-    while done < feed_count {
-        match resp_rx.recv() {
-            Ok(backend::BackendResponse::FeedArticles {
-                feed_name,
-                total,
-                unread,
-                ..
-            }) => {
-                eprintln!("{}: {} articles ({} unread)", feed_name, total, unread);
-                done += 1;
-            }
-            Ok(backend::BackendResponse::FetchError { feed_url, error }) => {
-                eprintln!("Error fetching {}: {}", feed_url, error);
-                done += 1;
-            }
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-
-    // TODO: start TUI event loop here; for now just exit
-    eprintln!("TUI not yet implemented. Feeds fetched successfully.");
 
     let _ = cmd_tx.send(backend::BackendCommand::Shutdown);
+    log::info("news shutdown");
 }
