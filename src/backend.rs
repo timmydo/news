@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::feed::Article;
+use crate::feed::{Article, FeedMeta};
 
 pub enum BackendCommand {
     FetchAllFeeds,
@@ -17,6 +17,7 @@ pub enum BackendResponse {
     FeedArticles {
         feed_url: String,
         feed_name: String,
+        fetched_at: String,
         articles: Vec<Article>,
         total: usize,
         unread: usize,
@@ -115,7 +116,14 @@ fn backend_loop(
 
 fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<BackendResponse>) {
     match crate::feed::fetch_feed(url, name) {
-        Ok((_title, articles)) => {
+        Ok((title, articles)) => {
+            let fetched_at = now_local_timestamp();
+            cache.put_feed_meta(&FeedMeta {
+                url: url.to_string(),
+                title,
+                last_fetched: fetched_at.clone(),
+            });
+
             // Deduplicate against cache
             let new_articles: Vec<_> = articles
                 .into_iter()
@@ -144,6 +152,7 @@ fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<B
             let _ = resp_tx.send(BackendResponse::FeedArticles {
                 feed_url: url.to_string(),
                 feed_name: name.to_string(),
+                fetched_at,
                 articles: new_articles,
                 total: hashes.len(),
                 unread,
@@ -154,6 +163,29 @@ fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<B
                 feed_url: url.to_string(),
                 error: e,
             });
+        }
+    }
+}
+
+fn now_local_timestamp() -> String {
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm = std::mem::zeroed::<libc::tm>();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            return "unknown".to_string();
+        }
+        let mut buf = [0u8; 32];
+        let fmt = b"%Y-%m-%d %H:%M:%S\0";
+        let n = libc::strftime(
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            fmt.as_ptr() as *const libc::c_char,
+            &tm,
+        );
+        if n == 0 {
+            "unknown".to_string()
+        } else {
+            String::from_utf8_lossy(&buf[..n as usize]).to_string()
         }
     }
 }
