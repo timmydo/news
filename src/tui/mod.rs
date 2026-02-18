@@ -765,7 +765,13 @@ impl App {
                     false,
                 )
             } else if idx == self.log_row_index() {
-                ("[Log]".to_string(), "-".to_string(), 0, 0, false)
+                (
+                    "[Log]".to_string(),
+                    "-".to_string(),
+                    self.current_log_entry_count(),
+                    0,
+                    false,
+                )
             } else {
                 let feed = &self.feeds[idx - 2];
                 (
@@ -1153,6 +1159,16 @@ impl App {
 
     fn total_unread(&self) -> usize {
         self.feeds.iter().map(|f| f.unread).sum()
+    }
+
+    fn current_log_entry_count(&self) -> usize {
+        let path = match self.log_tab {
+            LogTab::News => crate::log::news_log_path(),
+            LogTab::Debug => crate::log::debug_log_path(),
+        };
+        std::fs::read_to_string(path)
+            .map(|content| content.lines().count())
+            .unwrap_or(0)
     }
 
     fn feed_list_rows(&self) -> usize {
