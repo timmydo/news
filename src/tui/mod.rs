@@ -28,6 +28,7 @@ enum View {
     FeedList,
     ArticleList,
     ArticleView,
+    Log,
     Help,
 }
 
@@ -36,6 +37,12 @@ enum FeedScope {
     All,
     Unread,
     Feed(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogTab {
+    News,
+    Debug,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -100,6 +107,8 @@ struct App {
     last_size: (usize, usize),
     page_size: usize,
     theme: UiTheme,
+    log_tab: LogTab,
+    log_scroll: usize,
     quitting: bool,
     pending_redraw: bool,
 }
@@ -167,6 +176,8 @@ impl App {
             last_size: (80, 24),
             page_size: config.ui.page_size.max(1),
             theme: UiTheme::from_config(&config.theme),
+            log_tab: LogTab::News,
+            log_scroll: 0,
             quitting: false,
             pending_redraw: true,
         }
@@ -304,6 +315,7 @@ impl App {
             View::FeedList => self.handle_feed_keys(input, cache, cmd_tx),
             View::ArticleList => self.handle_article_list_keys(input, cache, cmd_tx),
             View::ArticleView => self.handle_article_view_keys(input, cache, cmd_tx),
+            View::Log => self.handle_log_keys(input),
             View::Help => {}
         }
 
@@ -350,12 +362,17 @@ impl App {
                 }
             }
             InputEvent::Key(Key::Enter) => {
-                self.selected_feed_scope = Some(self.scope_for_selected_feed());
-                self.selected_article = 0;
-                self.article_scroll = 0;
-                self.search.clear();
-                self.reload_articles(cache);
-                self.view = View::ArticleList;
+                if self.selected_feed == self.log_row_index() {
+                    self.view = View::Log;
+                    self.log_scroll = 0;
+                } else {
+                    self.selected_feed_scope = Some(self.scope_for_selected_feed());
+                    self.selected_article = 0;
+                    self.article_scroll = 0;
+                    self.search.clear();
+                    self.reload_articles(cache);
+                    self.view = View::ArticleList;
+                }
                 self.pending_redraw = true;
             }
             InputEvent::Key(Key::Char('g')) => {
@@ -363,26 +380,30 @@ impl App {
                 self.status = "Refreshing feeds...".to_string();
                 self.pending_redraw = true;
             }
-            InputEvent::Key(Key::Char('u')) => match self.scope_for_selected_feed() {
-                FeedScope::Feed(url) => {
-                    if let Some(feed) = self.feeds.iter().find(|f| f.url == url) {
-                        let _ = cmd_tx.send(BackendCommand::MarkFeedRead {
-                            feed_url: feed.url.clone(),
-                        });
-                        self.status = format!("Marking {} read...", feed.name);
-                        self.pending_redraw = true;
+            InputEvent::Key(Key::Char('u')) => {
+                if self.selected_feed != self.log_row_index() {
+                    match self.scope_for_selected_feed() {
+                        FeedScope::Feed(url) => {
+                            if let Some(feed) = self.feeds.iter().find(|f| f.url == url) {
+                                let _ = cmd_tx.send(BackendCommand::MarkFeedRead {
+                                    feed_url: feed.url.clone(),
+                                });
+                                self.status = format!("Marking {} read...", feed.name);
+                                self.pending_redraw = true;
+                            }
+                        }
+                        FeedScope::All | FeedScope::Unread => {
+                            for feed in &self.feeds {
+                                let _ = cmd_tx.send(BackendCommand::MarkFeedRead {
+                                    feed_url: feed.url.clone(),
+                                });
+                            }
+                            self.status = "Marking all feeds read...".to_string();
+                            self.pending_redraw = true;
+                        }
                     }
                 }
-                FeedScope::All | FeedScope::Unread => {
-                    for feed in &self.feeds {
-                        let _ = cmd_tx.send(BackendCommand::MarkFeedRead {
-                            feed_url: feed.url.clone(),
-                        });
-                    }
-                    self.status = "Marking all feeds read...".to_string();
-                    self.pending_redraw = true;
-                }
-            },
+            }
             _ => {}
         }
     }
@@ -560,6 +581,50 @@ impl App {
         }
     }
 
+    fn handle_log_keys(&mut self, input: InputEvent) {
+        match input {
+            InputEvent::Key(Key::Char('q')) => {
+                self.view = View::FeedList;
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::Down) | InputEvent::Key(Key::Char('j')) => {
+                self.log_scroll = self.log_scroll.saturating_add(1);
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::Up) | InputEvent::Key(Key::Char('k')) => {
+                self.log_scroll = self.log_scroll.saturating_sub(1);
+                self.pending_redraw = true;
+            }
+            InputEvent::Mouse(MouseEvent::ScrollDown) | InputEvent::Key(Key::PageDown) => {
+                self.log_scroll = self.log_scroll.saturating_add(15);
+                self.pending_redraw = true;
+            }
+            InputEvent::Mouse(MouseEvent::ScrollUp) | InputEvent::Key(Key::PageUp) => {
+                self.log_scroll = self.log_scroll.saturating_sub(15);
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::Home) => {
+                self.log_scroll = 0;
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::End) => {
+                self.log_scroll = usize::MAX;
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::Char('n')) => {
+                self.log_tab = LogTab::News;
+                self.log_scroll = 0;
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::Char('d')) => {
+                self.log_tab = LogTab::Debug;
+                self.log_scroll = 0;
+                self.pending_redraw = true;
+            }
+            _ => {}
+        }
+    }
+
     fn toggle_current_read(&mut self, _cache: &Cache, cmd_tx: &mpsc::Sender<BackendCommand>) {
         if let Some(article) = self.current_article().cloned() {
             let _ = cmd_tx.send(BackendCommand::MarkRead {
@@ -626,6 +691,7 @@ impl App {
             View::ArticleView => {
                 self.render_article_view(width, content_height, &mut content_lines)
             }
+            View::Log => self.render_log_view(width, content_height, &mut content_lines),
             View::Help => self.render_help(width, content_height, &mut content_lines),
         }
         lines.extend(content_lines);
@@ -637,7 +703,7 @@ impl App {
 
     fn render_feed_list(&self, width: usize, height: usize, lines: &mut Vec<String>) {
         lines.push(self.style_header(views::truncate(
-            "Feeds (Enter open, g refresh, u mark read, ? help, q quit)",
+            "Feeds (Enter open feed/log, g refresh, u mark read, ? help, q quit)",
             width,
         )));
 
@@ -662,6 +728,8 @@ impl App {
                     self.total_unread(),
                     false,
                 )
+            } else if idx == self.log_row_index() {
+                ("[Log]".to_string(), "-".to_string(), 0, 0, false)
             } else {
                 let feed = &self.feeds[idx - 2];
                 (
@@ -836,6 +904,9 @@ impl App {
         for item in keybindings::ARTICLE_VIEW {
             lines.push(views::truncate(&format!("Article view: {}", item), width));
         }
+        for item in keybindings::LOG_VIEW {
+            lines.push(views::truncate(&format!("Log view: {}", item), width));
+        }
         lines.push(views::truncate(
             "Mouse: feed click selects, article click opens, wheel scrolls lists/view",
             width,
@@ -845,6 +916,43 @@ impl App {
             lines.push(String::new());
         }
         lines.push(self.style_status(views::truncate(&self.status, width)));
+    }
+
+    fn render_log_view(&self, width: usize, height: usize, lines: &mut Vec<String>) {
+        let (label, path) = match self.log_tab {
+            LogTab::News => ("[News Log]", crate::log::news_log_path()),
+            LogTab::Debug => ("[Debug Log]", crate::log::debug_log_path()),
+        };
+        lines.push(self.style_header(views::truncate(
+            &format!("{} (n news, d debug, j/k scroll, PgUp/PgDn, q back)", label),
+            width,
+        )));
+
+        let log_text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| format!("Could not read {} ({})", path.display(), e));
+        let rendered: Vec<String> = if log_text.is_empty() {
+            vec!["Log is empty".to_string()]
+        } else {
+            log_text
+                .lines()
+                .map(|line| views::truncate(line, width))
+                .collect()
+        };
+
+        let body_rows = height.saturating_sub(2);
+        let start = self
+            .log_scroll
+            .min(rendered.len().saturating_sub(body_rows.max(1)));
+        for line in rendered.iter().skip(start).take(body_rows) {
+            lines.push(line.clone());
+        }
+        while lines.len() + 1 < height {
+            lines.push(String::new());
+        }
+        lines.push(self.style_status(views::truncate(
+            &format!("{} lines | {}", rendered.len(), path.display()),
+            width,
+        )));
     }
 
     fn style_header(&self, s: String) -> String {
@@ -967,6 +1075,10 @@ impl App {
     }
 
     fn feed_row_count(&self) -> usize {
+        self.feeds.len() + 3
+    }
+
+    fn log_row_index(&self) -> usize {
         self.feeds.len() + 2
     }
 
@@ -975,6 +1087,8 @@ impl App {
             FeedScope::All
         } else if self.selected_feed == 1 {
             FeedScope::Unread
+        } else if self.selected_feed >= self.log_row_index() {
+            FeedScope::All
         } else {
             FeedScope::Feed(self.feeds[self.selected_feed - 2].url.clone())
         }

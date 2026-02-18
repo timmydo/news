@@ -10,11 +10,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("Usage: news [OPTIONS]");
+        eprintln!("Usage: tn [OPTIONS]");
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --help          Show this help message");
-        eprintln!("  --log           View log file");
+        eprintln!("  --log           View debug log file");
+        eprintln!("  --news-log      View news log file");
         eprintln!("  --clear-cache   Delete all cache files");
         eprintln!("  --offline       Browse cached articles only");
         eprintln!("  --config=PATH   Use a custom config file");
@@ -22,7 +23,20 @@ fn main() {
     }
 
     if args.iter().any(|a| a == "--log") {
-        let path = log::log_path();
+        let path = log::debug_log_path();
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                print!("{}", contents);
+            }
+            Err(e) => {
+                eprintln!("No log at {} ({})", path.display(), e);
+            }
+        }
+        return;
+    }
+
+    if args.iter().any(|a| a == "--news-log") {
+        let path = log::news_log_path();
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
                 print!("{}", contents);
@@ -37,7 +51,8 @@ fn main() {
     if let Err(e) = log::init() {
         eprintln!("Failed to initialize logging: {}", e);
     } else {
-        log::info("news starting");
+        log::info("tn starting");
+        log::news("tn session started");
     }
 
     let config_path = args
@@ -71,12 +86,13 @@ fn main() {
         }
     };
 
-    let (cmd_tx, resp_rx) = backend::spawn(&config);
+    let (cmd_tx, resp_rx) = backend::spawn(&config, cache.clone());
     if let Err(e) = tui::run(&config, &cache, &cmd_tx, &resp_rx, offline) {
         log::error(format!("tui error: {}", e));
         eprintln!("TUI error: {}", e);
     }
 
     let _ = cmd_tx.send(backend::BackendCommand::Shutdown);
-    log::info("news shutdown");
+    log::info("tn shutdown");
+    log::news("tn session ended");
 }

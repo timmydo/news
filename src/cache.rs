@@ -1,5 +1,6 @@
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, TableDefinition};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::feed::{Article, FeedMeta};
 
@@ -8,7 +9,7 @@ const FEEDS: TableDefinition<&str, &str> = TableDefinition::new("feeds");
 const FEED_INDEX: TableDefinition<&str, &str> = TableDefinition::new("feed_index");
 
 pub struct Cache {
-    db: Database,
+    db: Arc<Database>,
 }
 
 impl Cache {
@@ -19,7 +20,7 @@ impl Cache {
         }
         let db =
             Database::create(&path).map_err(|e| format!("open cache {}: {}", path.display(), e))?;
-        Ok(Cache { db })
+        Ok(Cache { db: Arc::new(db) })
     }
 
     fn db_path() -> PathBuf {
@@ -99,5 +100,13 @@ impl Cache {
 
     pub fn article_exists(&self, hash: &str) -> bool {
         self.get_article(hash).is_some()
+    }
+}
+
+impl Clone for Cache {
+    fn clone(&self) -> Self {
+        Cache {
+            db: Arc::clone(&self.db),
+        }
     }
 }

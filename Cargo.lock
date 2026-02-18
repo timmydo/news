@@ -455,22 +455,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
-name = "news"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "html2text",
- "libc",
- "quick-xml",
- "redb",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "ureq",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -894,6 +878,22 @@ checksum = "42d3e9c45c09de15d06dd8acf5f4e0e399e85927b7f00711024eb7ae10fa4869"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tn"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "html2text",
+ "libc",
+ "quick-xml",
+ "redb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "ureq",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@ pub const GLOBAL: &[&str] = &["q: quit/back", "?: help", "g: refresh"];
 pub const FEED_LIST: &[&str] = &[
     "j/k or arrows: move",
     "n/p: next/prev",
-    "Enter: open feed",
+    "Enter: open feed/[Log]",
     "u: mark feed read",
 ];
 
@@ -26,4 +26,13 @@ pub const ARTICLE_VIEW: &[&str] = &[
     "n/p: next/prev article",
     "u: toggle read",
     "o: open link",
+];
+
+pub const LOG_VIEW: &[&str] = &[
+    "n: show [News Log]",
+    "d: show [Debug Log]",
+    "j/k or arrows: scroll",
+    "PgUp/PgDn: page scroll",
+    "Home/End: top/bottom",
+    "q: back",
 ];

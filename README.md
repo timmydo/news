@@ -1,6 +1,6 @@
-# news
+# Timmy's News
 
-`news` is a Rust terminal news reader for RSS/Atom feeds. It fetches feeds,
+`tn` (Timmy's News) is a Rust terminal news reader for RSS/Atom feeds. It fetches feeds,
 caches articles in `redb`, and provides a keyboard/mouse-first TUI.
 
 ## Build / Run
@@ -48,6 +48,8 @@ url = "https://news.ycombinator.com/rss"
 
 ## Usage
 
+- CLI executable: `tn`
+
 - Main feed list includes virtual views:
 - `[All]` for all feeds combined
 - `[Unread]` for unread-only combined
@@ -69,4 +71,3 @@ url = "https://news.ycombinator.com/rss"
 ## Cache
 
 - Database: `~/.cache/news/news.redb`
-

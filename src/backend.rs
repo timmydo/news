@@ -38,6 +38,7 @@ pub enum BackendResponse {
 
 pub fn spawn(
     config: &Config,
+    cache: Cache,
 ) -> (
     mpsc::Sender<BackendCommand>,
     mpsc::Receiver<BackendResponse>,
@@ -49,17 +50,11 @@ pub fn spawn(
     let sync_interval = Duration::from_secs(config.ui.sync_interval_secs);
 
     std::thread::spawn(move || {
-        let cache = match Cache::open() {
-            Ok(c) => c,
-            Err(e) => {
-                log::error(format!("backend failed to open cache: {}", e));
-                eprintln!("Failed to open cache: {}", e);
-                return;
-            }
-        };
         log::info("backend thread started");
+        log::news("backend thread started");
         backend_loop(cmd_rx, resp_tx, &cache, &feeds, sync_interval);
         log::info("backend thread stopped");
+        log::news("backend thread stopped");
     });
 
     (cmd_tx, resp_rx)
@@ -80,6 +75,7 @@ fn backend_loop(
             Ok(cmd) => match cmd {
                 BackendCommand::FetchAllFeeds => {
                     log::info("backend command: FetchAllFeeds");
+                    log::news("manual refresh: all feeds");
                     for feed in feeds {
                         fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
                     }
@@ -113,6 +109,7 @@ fn backend_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Periodic refresh: re-fetch all feeds
                 log::info("backend periodic refresh");
+                log::news("scheduled refresh: all feeds");
                 for feed in feeds {
                     fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
                 }
@@ -128,6 +125,7 @@ fn backend_loop(
 
 fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<BackendResponse>) {
     log::info(format!("fetch start: {} ({})", name, url));
+    log::news(format!("refresh start: {} ({})", name, url));
     match crate::feed::fetch_feed(url, name) {
         Ok((title, articles)) => {
             let fetched_at = now_local_datetime_string();
@@ -170,6 +168,14 @@ fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<B
                 hashes.len(),
                 unread
             ));
+            log::news(format!(
+                "refresh done: {} ({}) new={} total={} unread={}",
+                name,
+                url,
+                new_articles.len(),
+                hashes.len(),
+                unread
+            ));
 
             let _ = resp_tx.send(BackendResponse::FeedArticles {
                 feed_url: url.to_string(),
@@ -182,6 +188,7 @@ fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<B
         }
         Err(e) => {
             log::error(format!("fetch error: {} ({}) {}", name, url, e));
+            log::news(format!("refresh error: {} ({}) {}", name, url, e));
             let _ = resp_tx.send(BackendResponse::FetchError {
                 feed_url: url.to_string(),
                 error: e,
