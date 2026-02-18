@@ -38,13 +38,39 @@ fn main() {
         return;
     }
 
-    let _offline = args.iter().any(|a| a == "--offline");
+    let offline = args.iter().any(|a| a == "--offline");
 
-    eprintln!("Loaded {} feeds from config.", config.feeds.len());
-    for f in &config.feeds {
-        eprintln!("  - {} ({})", f.name, f.url);
+    let (cmd_tx, resp_rx) = backend::spawn(&config);
+
+    if !offline {
+        cmd_tx.send(backend::BackendCommand::FetchAllFeeds).unwrap();
     }
 
-    // TODO: spawn backend, start TUI
-    eprintln!("TUI not yet implemented.");
+    // Process backend responses until all feeds are fetched
+    let feed_count = config.feeds.len();
+    let mut done = 0;
+    while done < feed_count {
+        match resp_rx.recv() {
+            Ok(backend::BackendResponse::FeedArticles {
+                feed_name,
+                total,
+                unread,
+                ..
+            }) => {
+                eprintln!("{}: {} articles ({} unread)", feed_name, total, unread);
+                done += 1;
+            }
+            Ok(backend::BackendResponse::FetchError { feed_url, error }) => {
+                eprintln!("Error fetching {}: {}", feed_url, error);
+                done += 1;
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+
+    // TODO: start TUI event loop here; for now just exit
+    eprintln!("TUI not yet implemented. Feeds fetched successfully.");
+
+    let _ = cmd_tx.send(backend::BackendCommand::Shutdown);
 }

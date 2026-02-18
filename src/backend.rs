@@ -1,4 +1,5 @@
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::config::Config;
@@ -43,6 +44,7 @@ pub fn spawn(
     let (resp_tx, resp_rx) = mpsc::channel::<BackendResponse>();
 
     let feeds = config.feeds.clone();
+    let sync_interval = Duration::from_secs(config.ui.sync_interval_secs);
 
     std::thread::spawn(move || {
         let cache = match Cache::open() {
@@ -52,7 +54,7 @@ pub fn spawn(
                 return;
             }
         };
-        backend_loop(cmd_rx, resp_tx, &cache, &feeds);
+        backend_loop(cmd_rx, resp_tx, &cache, &feeds, sync_interval);
     });
 
     (cmd_tx, resp_rx)
@@ -63,35 +65,50 @@ fn backend_loop(
     resp_tx: mpsc::Sender<BackendResponse>,
     cache: &Cache,
     feeds: &[crate::config::FeedConfig],
+    sync_interval: Duration,
 ) {
-    while let Ok(cmd) = cmd_rx.recv() {
-        match cmd {
-            BackendCommand::FetchAllFeeds => {
+    let mut last_fetch = Instant::now();
+
+    loop {
+        let timeout = sync_interval.saturating_sub(last_fetch.elapsed());
+        match cmd_rx.recv_timeout(timeout) {
+            Ok(cmd) => match cmd {
+                BackendCommand::FetchAllFeeds => {
+                    for feed in feeds {
+                        fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
+                    }
+                    last_fetch = Instant::now();
+                }
+                BackendCommand::FetchFeed { url } => {
+                    let name = feeds
+                        .iter()
+                        .find(|f| f.url == url)
+                        .map(|f| f.name.as_str())
+                        .unwrap_or("Unknown");
+                    fetch_one_feed(&url, name, cache, &resp_tx);
+                }
+                BackendCommand::MarkRead { hash, read } => {
+                    cache.mark_read(&hash, read);
+                    let _ = resp_tx.send(BackendResponse::ArticleMutation { hash, read });
+                }
+                BackendCommand::MarkFeedRead { feed_url } => {
+                    if let Some(hashes) = cache.get_feed_index(&feed_url) {
+                        for h in &hashes {
+                            cache.mark_read(h, true);
+                        }
+                    }
+                    let _ = resp_tx.send(BackendResponse::FeedMarkedRead { feed_url });
+                }
+                BackendCommand::Shutdown => break,
+            },
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Periodic refresh: re-fetch all feeds
                 for feed in feeds {
                     fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
                 }
+                last_fetch = Instant::now();
             }
-            BackendCommand::FetchFeed { url } => {
-                let name = feeds
-                    .iter()
-                    .find(|f| f.url == url)
-                    .map(|f| f.name.as_str())
-                    .unwrap_or("Unknown");
-                fetch_one_feed(&url, name, cache, &resp_tx);
-            }
-            BackendCommand::MarkRead { hash, read } => {
-                cache.mark_read(&hash, read);
-                let _ = resp_tx.send(BackendResponse::ArticleMutation { hash, read });
-            }
-            BackendCommand::MarkFeedRead { feed_url } => {
-                if let Some(hashes) = cache.get_feed_index(&feed_url) {
-                    for h in &hashes {
-                        cache.mark_read(h, true);
-                    }
-                }
-                let _ = resp_tx.send(BackendResponse::FeedMarkedRead { feed_url });
-            }
-            BackendCommand::Shutdown => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 }

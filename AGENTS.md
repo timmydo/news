@@ -53,34 +53,6 @@ header_fg = "#268bd2"
 [[feed]]
 name = "Hacker News"
 url = "https://news.ycombinator.com/rss"
-
-[[feed]]
-name = "Phoronix"
-url = "https://www.phoronix.com/rss.php"
-
-[[feed]]
-name = "LWN"
-url = "https://lwn.net/headlines/rss"
-
-[[feed]]
-name = "Drew DeVault"
-url = "https://drewdevault.com/blog/index.xml"
-
-[[feed]]
-name = "The Urbanist"
-url = "https://www.theurbanist.org/feed/"
-
-[[feed]]
-name = "Seattle Bike Blog"
-url = "https://www.seattlebikeblog.com/feed/"
-
-[[feed]]
-name = "SourceHut"
-url = "https://ln.ht/_/feed/~ddevault"
-
-[[feed]]
-name = "timmydouglas.com"
-url = "https://timmydouglas.com/post/index.xml"
 ```
 
 ## Architecture

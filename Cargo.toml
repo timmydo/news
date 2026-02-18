@@ -10,6 +10,7 @@ ureq = { version = "2", features = ["json"] }
 libc = "0.2"
 toml = "0.8"
 html2text = "0.16"
+quick-xml = "0.37"
 redb = "2"
 
 [dev-dependencies]

@@ -1,9 +1,9 @@
 # TODO
 
 ## Core
-- [ ] Implement RSS/Atom XML feed parser in `feed.rs`
-- [ ] Wire up backend thread to TUI in `main.rs`
-- [ ] Implement periodic background feed refresh (sync_interval_secs)
+- [x] Implement RSS/Atom XML feed parser in `feed.rs`
+- [x] Wire up backend thread to TUI in `main.rs`
+- [x] Implement periodic background feed refresh (sync_interval_secs)
 
 ## TUI
 - [ ] Raw terminal setup and ANSI drawing (`tui/screen.rs`)
