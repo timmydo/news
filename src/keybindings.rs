@@ -1,9 +1,16 @@
-pub const GLOBAL: &[&str] = &["q: quit/back", "?: help", "g: refresh"];
+pub const GLOBAL: &[&str] = &[
+    "q: quit/back",
+    "?: help",
+    "g: refresh current feed",
+    "G: refresh all feeds",
+];
 
 pub const FEED_LIST: &[&str] = &[
     "j/k or arrows: move",
     "n/p: next/prev",
     "Enter: open feed/[Log]",
+    "g: refresh current feed",
+    "G: refresh all feeds",
     "u: mark feed read",
 ];
 
@@ -15,6 +22,8 @@ pub const ARTICLE_LIST: &[&str] = &[
     "Enter: open article",
     "Mouse wheel: move selection",
     "Mouse click: open article",
+    "g: refresh current feed",
+    "G: refresh all feeds",
     "u: toggle read",
     "o: open link",
 ];

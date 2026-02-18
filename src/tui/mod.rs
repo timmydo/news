@@ -2,6 +2,7 @@ mod input;
 mod screen;
 pub mod views;
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -381,6 +382,25 @@ impl App {
                 self.pending_redraw = true;
             }
             InputEvent::Key(Key::Char('g')) => {
+                match self.scope_for_selected_feed() {
+                    FeedScope::Feed(url) => {
+                        let feed_name = self
+                            .feeds
+                            .iter()
+                            .find(|f| f.url == url)
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("feed");
+                        let _ = cmd_tx.send(BackendCommand::FetchFeed { url });
+                        self.status = format!("Refreshing {}...", feed_name);
+                    }
+                    FeedScope::All | FeedScope::Unread => {
+                        let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
+                        self.status = "Refreshing feeds...".to_string();
+                    }
+                }
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::Char('G')) => {
                 let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
                 self.status = "Refreshing feeds...".to_string();
                 self.pending_redraw = true;
@@ -533,6 +553,11 @@ impl App {
                     }
                     self.pending_redraw = true;
                 }
+            }
+            InputEvent::Key(Key::Char('G')) => {
+                let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
+                self.status = "Refreshing feeds...".to_string();
+                self.pending_redraw = true;
             }
             InputEvent::Key(Key::Char('u')) => self.toggle_current_read(cache, cmd_tx),
             InputEvent::Key(Key::Char('o')) => self.open_current_article(),
@@ -716,7 +741,7 @@ impl App {
 
     fn render_feed_list(&self, width: usize, height: usize, lines: &mut Vec<String>) {
         lines.push(self.style_header(views::truncate(
-            "Feeds (Enter open feed/log, g refresh, u mark read, ? help, q quit)",
+            "Feeds (Enter open feed/log, g refresh feed, G refresh all, u mark read, ? help, q quit)",
             width,
         )));
 
@@ -784,7 +809,7 @@ impl App {
             None => "Articles",
         };
         let mut header = format!(
-            "{} (Enter open, / search, u toggle read, o open, q back)",
+            "{} (Enter open, / search, g refresh, G all refresh, u toggle read, o open, q back)",
             feed_name
         );
         if !self.search.is_empty() {
@@ -1042,14 +1067,32 @@ impl App {
     }
 
     fn recount_current_feed_unread(&mut self) {
-        let Some(url) = self.selected_feed_scope.as_ref() else {
+        let Some(scope) = self.selected_feed_scope.as_ref() else {
             return;
         };
-        if let FeedScope::Feed(url) = url {
-            let unread = self.articles.iter().filter(|a| !a.read).count();
-            if let Some(row) = self.feeds.iter_mut().find(|f| &f.url == url) {
-                row.unread = unread;
-                row.total = self.articles.len();
+        match scope {
+            FeedScope::Feed(url) => {
+                let unread = self.articles.iter().filter(|a| !a.read).count();
+                if let Some(row) = self.feeds.iter_mut().find(|f| &f.url == url) {
+                    row.unread = unread;
+                    row.total = self.articles.len();
+                }
+            }
+            FeedScope::All | FeedScope::Unread => {
+                let mut unread_by_feed_name: HashMap<&str, usize> = HashMap::new();
+                for article in &self.articles {
+                    if !article.read {
+                        *unread_by_feed_name
+                            .entry(article.feed_name.as_str())
+                            .or_insert(0) += 1;
+                    }
+                }
+                for row in &mut self.feeds {
+                    row.unread = unread_by_feed_name
+                        .get(row.name.as_str())
+                        .copied()
+                        .unwrap_or(0);
+                }
             }
         }
     }
