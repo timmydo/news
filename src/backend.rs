@@ -1,10 +1,11 @@
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::feed::{now_local_datetime_string, Article, FeedMeta};
+use crate::feed::{datetime_sort_key, now_local_datetime_string, Article, FeedMeta};
 use crate::log;
+use chrono::Local;
 
 pub enum BackendCommand {
     FetchAllFeeds,
@@ -67,10 +68,8 @@ fn backend_loop(
     feeds: &[crate::config::FeedConfig],
     sync_interval: Duration,
 ) {
-    let mut last_fetch = Instant::now();
-
     loop {
-        let timeout = sync_interval.saturating_sub(last_fetch.elapsed());
+        let timeout = next_refresh_timeout(cache, feeds, sync_interval);
         match cmd_rx.recv_timeout(timeout) {
             Ok(cmd) => match cmd {
                 BackendCommand::FetchAllFeeds => {
@@ -79,7 +78,6 @@ fn backend_loop(
                     for feed in feeds {
                         fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
                     }
-                    last_fetch = Instant::now();
                 }
                 BackendCommand::FetchFeed { url } => {
                     log::info(format!("backend command: FetchFeed {}", url));
@@ -107,13 +105,17 @@ fn backend_loop(
                 BackendCommand::Shutdown => break,
             },
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Periodic refresh: re-fetch all feeds
-                log::info("backend periodic refresh");
-                log::news("scheduled refresh: all feeds");
-                for feed in feeds {
+                // Periodic refresh: only fetch feeds whose last refresh is stale.
+                let due = due_feed_indices(cache, feeds, sync_interval);
+                if due.is_empty() {
+                    continue;
+                }
+                log::info(format!("backend periodic refresh: {} due", due.len()));
+                log::news(format!("scheduled refresh: {} due feed(s)", due.len()));
+                for idx in due {
+                    let feed = &feeds[idx];
                     fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
                 }
-                last_fetch = Instant::now();
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 log::warn("backend command channel disconnected");
@@ -121,6 +123,69 @@ fn backend_loop(
             }
         }
     }
+}
+
+fn due_feed_indices(
+    cache: &Cache,
+    feeds: &[crate::config::FeedConfig],
+    sync_interval: Duration,
+) -> Vec<usize> {
+    let now = Local::now().timestamp();
+    let interval_secs = sync_interval.as_secs() as i64;
+
+    feeds
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, feed)| {
+            let last_fetched = cache
+                .get_feed_meta(&feed.url)
+                .and_then(|meta| datetime_sort_key(Some(&meta.last_fetched)));
+
+            let is_due = match last_fetched {
+                Some(ts) => now.saturating_sub(ts) >= interval_secs,
+                None => true,
+            };
+
+            if is_due {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn next_refresh_timeout(
+    cache: &Cache,
+    feeds: &[crate::config::FeedConfig],
+    sync_interval: Duration,
+) -> Duration {
+    if feeds.is_empty() {
+        return sync_interval;
+    }
+
+    let now = Local::now().timestamp();
+    let interval_secs = sync_interval.as_secs() as i64;
+    let mut min_remaining = interval_secs;
+
+    for feed in feeds {
+        let last_fetched = cache
+            .get_feed_meta(&feed.url)
+            .and_then(|meta| datetime_sort_key(Some(&meta.last_fetched)));
+
+        match last_fetched {
+            Some(ts) => {
+                let elapsed = now.saturating_sub(ts);
+                if elapsed >= interval_secs {
+                    return Duration::from_secs(0);
+                }
+                min_remaining = min_remaining.min(interval_secs - elapsed);
+            }
+            None => return Duration::from_secs(0),
+        }
+    }
+
+    Duration::from_secs(min_remaining as u64)
 }
 
 fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<BackendResponse>) {

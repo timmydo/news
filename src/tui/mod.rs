@@ -67,9 +67,6 @@ pub fn run(
     input::spawn_input_thread(input_tx);
 
     let mut app = App::new(config, cache, offline);
-    if !offline {
-        let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
-    }
 
     loop {
         while let Ok(resp) = resp_rx.try_recv() {
