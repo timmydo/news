@@ -96,7 +96,9 @@ struct App {
     view: View,
     feeds: Vec<FeedRow>,
     selected_feed: usize,
+    feed_list_scroll: usize,
     selected_article: usize,
+    article_list_scroll: usize,
     article_scroll: usize,
     selected_feed_scope: Option<FeedScope>,
     articles: Vec<Article>,
@@ -161,7 +163,9 @@ impl App {
             view: View::FeedList,
             feeds,
             selected_feed: 0,
+            feed_list_scroll: 0,
             selected_article: 0,
+            article_list_scroll: 0,
             article_scroll: 0,
             selected_feed_scope: None,
             articles: Vec::new(),
@@ -293,16 +297,19 @@ impl App {
                     Key::Enter => {
                         self.search_mode = false;
                         self.selected_article = 0;
+                        self.article_list_scroll = 0;
                         self.pending_redraw = true;
                     }
                     Key::Backspace => {
                         self.search.pop();
                         self.selected_article = 0;
+                        self.article_list_scroll = 0;
                         self.pending_redraw = true;
                     }
                     Key::Char(c) if !c.is_control() => {
                         self.search.push(c);
                         self.selected_article = 0;
+                        self.article_list_scroll = 0;
                         self.pending_redraw = true;
                     }
                     _ => {}
@@ -337,6 +344,7 @@ impl App {
             | InputEvent::Key(Key::Char('n')) => {
                 if self.selected_feed + 1 < self.feed_row_count() {
                     self.selected_feed += 1;
+                    self.ensure_selected_feed_visible();
                     self.pending_redraw = true;
                 }
             }
@@ -345,18 +353,17 @@ impl App {
             | InputEvent::Key(Key::Char('p')) => {
                 if self.selected_feed > 0 {
                     self.selected_feed -= 1;
+                    self.ensure_selected_feed_visible();
                     self.pending_redraw = true;
                 }
             }
             InputEvent::Mouse(MouseEvent::LeftClick { row }) => {
                 if row >= 2 {
-                    let list_rows = self.feed_list_rows();
-                    let start = self
-                        .selected_feed
-                        .saturating_sub(list_rows.saturating_sub(1));
+                    let start = self.feed_list_start();
                     let idx = start + (row - 2);
                     if idx < self.feed_row_count() {
                         self.selected_feed = idx;
+                        self.ensure_selected_feed_visible();
                         self.pending_redraw = true;
                     }
                 }
@@ -368,6 +375,7 @@ impl App {
                 } else {
                     self.selected_feed_scope = Some(self.scope_for_selected_feed());
                     self.selected_article = 0;
+                    self.article_list_scroll = 0;
                     self.article_scroll = 0;
                     self.search.clear();
                     self.reload_articles(cache);
@@ -426,6 +434,7 @@ impl App {
                 let visible = self.filtered_article_indices();
                 if self.selected_article + 1 < visible.len() {
                     self.selected_article += 1;
+                    self.ensure_selected_article_visible(visible.len());
                     self.pending_redraw = true;
                 }
             }
@@ -434,19 +443,18 @@ impl App {
             | InputEvent::Key(Key::Char('p')) => {
                 if self.selected_article > 0 {
                     self.selected_article -= 1;
+                    self.ensure_selected_article_visible(self.filtered_article_indices().len());
                     self.pending_redraw = true;
                 }
             }
             InputEvent::Mouse(MouseEvent::LeftClick { row }) => {
-                if row >= 3 {
-                    let list_rows = self.article_list_rows();
-                    let start = self
-                        .selected_article
-                        .saturating_sub(list_rows.saturating_sub(1));
-                    let idx = start + (row - 3);
+                if row >= 2 {
                     let visible = self.filtered_article_indices();
+                    let start = self.article_list_start(visible.len());
+                    let idx = start + (row - 2);
                     if idx < visible.len() {
                         self.selected_article = idx;
+                        self.ensure_selected_article_visible(visible.len());
                         self.article_scroll = 0;
                         self.view = View::ArticleView;
                         self.mark_current_article_read(cmd_tx);
@@ -458,12 +466,14 @@ impl App {
                 let visible = self.filtered_article_indices();
                 if self.selected_article + 1 < visible.len() {
                     self.selected_article += 1;
+                    self.ensure_selected_article_visible(visible.len());
                     self.pending_redraw = true;
                 }
             }
             InputEvent::Mouse(MouseEvent::ScrollUp) => {
                 if self.selected_article > 0 {
                     self.selected_article -= 1;
+                    self.ensure_selected_article_visible(self.filtered_article_indices().len());
                     self.pending_redraw = true;
                 }
             }
@@ -480,6 +490,7 @@ impl App {
                 if !visible.is_empty() {
                     let step = self.article_list_rows().max(1);
                     self.selected_article = (self.selected_article + step).min(visible.len() - 1);
+                    self.ensure_selected_article_visible(visible.len());
                     self.pending_redraw = true;
                 }
             }
@@ -488,12 +499,14 @@ impl App {
                 if !visible.is_empty() {
                     let step = self.article_list_rows().max(1);
                     self.selected_article = self.selected_article.saturating_sub(step);
+                    self.ensure_selected_article_visible(visible.len());
                     self.pending_redraw = true;
                 }
             }
             InputEvent::Key(Key::Home) => {
                 if !self.filtered_article_indices().is_empty() {
                     self.selected_article = 0;
+                    self.article_list_scroll = 0;
                     self.pending_redraw = true;
                 }
             }
@@ -501,6 +514,7 @@ impl App {
                 let visible = self.filtered_article_indices();
                 if !visible.is_empty() {
                     self.selected_article = visible.len() - 1;
+                    self.ensure_selected_article_visible(visible.len());
                     self.pending_redraw = true;
                 }
             }
@@ -682,6 +696,8 @@ impl App {
         )));
         let content_height = height.saturating_sub(1);
         let mut content_lines = Vec::with_capacity(content_height);
+        self.ensure_selected_feed_visible();
+        self.ensure_selected_article_visible(self.filtered_article_indices().len());
 
         match self.view {
             View::FeedList => self.render_feed_list(width, content_height, &mut content_lines),
@@ -708,9 +724,7 @@ impl App {
         )));
 
         let list_rows = height.saturating_sub(2);
-        let start = self
-            .selected_feed
-            .saturating_sub(list_rows.saturating_sub(1));
+        let start = self.feed_list_start();
         for idx in start..self.feed_row_count().min(start + list_rows) {
             let (name, updated, total, unread, has_error) = if idx == 0 {
                 (
@@ -790,9 +804,7 @@ impl App {
             Some(FeedScope::All | FeedScope::Unread)
         );
         let list_rows = height.saturating_sub(2);
-        let start = self
-            .selected_article
-            .saturating_sub(list_rows.saturating_sub(1));
+        let start = self.article_list_start(visible.len());
         for (list_idx, article_idx) in visible
             .iter()
             .copied()
@@ -1029,6 +1041,7 @@ impl App {
         if self.selected_article >= visible_len {
             self.selected_article = visible_len.saturating_sub(1);
         }
+        self.ensure_selected_article_visible(visible_len);
     }
 
     fn recount_current_feed_unread(&mut self) {
@@ -1108,6 +1121,55 @@ impl App {
 
     fn article_list_rows(&self) -> usize {
         self.last_size.1.saturating_sub(3).min(self.page_size)
+    }
+
+    fn feed_list_start(&self) -> usize {
+        let list_rows = self.feed_list_rows().max(1);
+        self.feed_list_scroll
+            .min(self.feed_row_count().saturating_sub(list_rows))
+    }
+
+    fn article_list_start(&self, visible_len: usize) -> usize {
+        let list_rows = self.article_list_rows().max(1);
+        self.article_list_scroll
+            .min(visible_len.saturating_sub(list_rows))
+    }
+
+    fn ensure_selected_feed_visible(&mut self) {
+        let total_rows = self.feed_row_count();
+        if total_rows == 0 {
+            self.selected_feed = 0;
+            self.feed_list_scroll = 0;
+            return;
+        }
+        self.selected_feed = self.selected_feed.min(total_rows - 1);
+        let list_rows = self.feed_list_rows().max(1);
+        self.feed_list_scroll = self
+            .feed_list_scroll
+            .min(total_rows.saturating_sub(list_rows));
+        if self.selected_feed < self.feed_list_scroll {
+            self.feed_list_scroll = self.selected_feed;
+        } else if self.selected_feed >= self.feed_list_scroll + list_rows {
+            self.feed_list_scroll = self.selected_feed + 1 - list_rows;
+        }
+    }
+
+    fn ensure_selected_article_visible(&mut self, visible_len: usize) {
+        if visible_len == 0 {
+            self.selected_article = 0;
+            self.article_list_scroll = 0;
+            return;
+        }
+        self.selected_article = self.selected_article.min(visible_len - 1);
+        let list_rows = self.article_list_rows().max(1);
+        self.article_list_scroll = self
+            .article_list_scroll
+            .min(visible_len.saturating_sub(list_rows));
+        if self.selected_article < self.article_list_scroll {
+            self.article_list_scroll = self.selected_article;
+        } else if self.selected_article >= self.article_list_scroll + list_rows {
+            self.article_list_scroll = self.selected_article + 1 - list_rows;
+        }
     }
 }
 
