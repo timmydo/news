@@ -20,6 +20,7 @@ struct FeedRow {
     url: String,
     total: usize,
     unread: usize,
+    last_updated: Option<String>,
     last_error: Option<String>,
 }
 
@@ -140,6 +141,9 @@ impl App {
                 url: feed.url.clone(),
                 total: hashes.len(),
                 unread,
+                last_updated: cache
+                    .get_feed_meta(&feed.url)
+                    .and_then(|m| normalize_datetime_to_local(&m.last_fetched)),
                 last_error: None,
             });
         }
@@ -181,6 +185,7 @@ impl App {
                 if let Some(row) = self.feeds.iter_mut().find(|f| f.url == feed_url) {
                     row.total = total;
                     row.unread = unread;
+                    row.last_updated = normalize_datetime_to_local(&fetched_at);
                     row.last_error = None;
                 }
                 if matches!(
@@ -412,17 +417,18 @@ impl App {
                 }
             }
             InputEvent::Mouse(MouseEvent::LeftClick { row }) => {
-                if row >= 2 {
+                if row >= 3 {
                     let list_rows = self.article_list_rows();
                     let start = self
                         .selected_article
                         .saturating_sub(list_rows.saturating_sub(1));
-                    let idx = start + (row - 2);
+                    let idx = start + (row - 3);
                     let visible = self.filtered_article_indices();
                     if idx < visible.len() {
                         self.selected_article = idx;
                         self.article_scroll = 0;
                         self.view = View::ArticleView;
+                        self.mark_current_article_read(cmd_tx);
                         self.pending_redraw = true;
                     }
                 }
@@ -444,6 +450,7 @@ impl App {
                 if !self.filtered_article_indices().is_empty() {
                     self.article_scroll = 0;
                     self.view = View::ArticleView;
+                    self.mark_current_article_read(cmd_tx);
                     self.pending_redraw = true;
                 }
             }
@@ -535,6 +542,7 @@ impl App {
                 if self.selected_article + 1 < visible.len() {
                     self.selected_article += 1;
                     self.article_scroll = 0;
+                    self.mark_current_article_read(cmd_tx);
                     self.pending_redraw = true;
                 }
             }
@@ -542,6 +550,7 @@ impl App {
                 if self.selected_article > 0 {
                     self.selected_article -= 1;
                     self.article_scroll = 0;
+                    self.mark_current_article_read(cmd_tx);
                     self.pending_redraw = true;
                 }
             }
@@ -572,6 +581,22 @@ impl App {
                 Err(e) => format!("Failed to open browser: {}", e),
             };
             self.pending_redraw = true;
+        }
+    }
+
+    fn mark_current_article_read(&mut self, cmd_tx: &mpsc::Sender<BackendCommand>) {
+        if let Some(article) = self.current_article().cloned() {
+            if article.read {
+                return;
+            }
+            let _ = cmd_tx.send(BackendCommand::MarkRead {
+                hash: article.hash.clone(),
+                read: true,
+            });
+            if let Some(local) = self.articles.iter_mut().find(|a| a.hash == article.hash) {
+                local.read = true;
+            }
+            self.recount_current_feed_unread();
         }
     }
 
@@ -621,9 +646,10 @@ impl App {
             .selected_feed
             .saturating_sub(list_rows.saturating_sub(1));
         for idx in start..self.feed_row_count().min(start + list_rows) {
-            let (name, total, unread, has_error) = if idx == 0 {
+            let (name, updated, total, unread, has_error) = if idx == 0 {
                 (
                     "[All]".to_string(),
+                    self.last_updated.clone().unwrap_or_else(|| "-".to_string()),
                     self.total_articles(),
                     self.total_unread(),
                     false,
@@ -631,6 +657,7 @@ impl App {
             } else if idx == 1 {
                 (
                     "[Unread]".to_string(),
+                    self.last_updated.clone().unwrap_or_else(|| "-".to_string()),
                     self.total_unread(),
                     self.total_unread(),
                     false,
@@ -639,6 +666,7 @@ impl App {
                 let feed = &self.feeds[idx - 2];
                 (
                     feed.name.clone(),
+                    feed.last_updated.clone().unwrap_or_else(|| "-".to_string()),
                     feed.total,
                     feed.unread,
                     feed.last_error.is_some(),
@@ -647,8 +675,8 @@ impl App {
             let marker = if idx == self.selected_feed { ">" } else { " " };
             let err = if has_error { " !" } else { "" };
             let line = format!(
-                "{} {:<24} {:>5} total {:>5} unread{}",
-                marker, name, total, unread, err
+                "{} {:<22} {:<19} {:>5} total {:>5} unread{}",
+                marker, name, updated, total, unread, err
             );
             let line = views::truncate(&line, width);
             if idx == self.selected_feed {
