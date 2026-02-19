@@ -19,6 +19,7 @@ pub struct UiConfig {
     pub mouse: bool,
     #[serde(default = "default_sync_interval")]
     pub sync_interval_secs: u64,
+    pub browser: Option<String>,
 }
 
 impl Default for UiConfig {
@@ -27,6 +28,7 @@ impl Default for UiConfig {
             page_size: default_page_size(),
             mouse: true,
             sync_interval_secs: default_sync_interval(),
+            browser: None,
         }
     }
 }

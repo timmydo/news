@@ -34,7 +34,9 @@ pub const ARTICLE_VIEW: &[&str] = &[
     "PgUp: page up",
     "n/p: next/prev article",
     "u: toggle read",
-    "o: open link",
+    "o: open article link",
+    "b: open URL (picker if multiple)",
+    "1-9: open URL by number",
 ];
 
 pub const LOG_VIEW: &[&str] = &[

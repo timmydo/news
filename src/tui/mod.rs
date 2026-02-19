@@ -63,7 +63,7 @@ pub fn run(
     resp_rx: &mpsc::Receiver<BackendResponse>,
     offline: bool,
 ) -> Result<(), String> {
-    let terminal = Terminal::enter(config.ui.mouse, &config.theme)?;
+    let mut terminal = Terminal::enter(config.ui.mouse, &config.theme)?;
     let (input_tx, input_rx) = mpsc::channel::<InputEvent>();
     input::spawn_input_thread(input_tx);
 
@@ -78,7 +78,7 @@ pub fn run(
 
         match input_rx.recv_timeout(Duration::from_millis(120)) {
             Ok(input) => {
-                if app.handle_input(input, cache, cmd_tx) {
+                if app.handle_input(input, cache, cmd_tx, &mut terminal) {
                     break;
                 }
             }
@@ -111,6 +111,11 @@ struct App {
     log_scroll: usize,
     quitting: bool,
     pending_redraw: bool,
+    mouse_config: bool,
+    browser: Option<String>,
+    article_urls: Vec<String>,
+    url_picking: bool,
+    url_cursor: usize,
 }
 
 impl UiTheme {
@@ -182,6 +187,11 @@ impl App {
             log_scroll: 0,
             quitting: false,
             pending_redraw: true,
+            mouse_config: config.ui.mouse,
+            browser: config.ui.browser.clone(),
+            article_urls: Vec::new(),
+            url_picking: false,
+            url_cursor: 0,
         }
     }
 
@@ -264,6 +274,7 @@ impl App {
         input: InputEvent,
         cache: &Cache,
         cmd_tx: &mpsc::Sender<BackendCommand>,
+        terminal: &mut Terminal,
     ) -> bool {
         if self.quitting {
             return true;
@@ -318,8 +329,8 @@ impl App {
 
         match self.view {
             View::FeedList => self.handle_feed_keys(input, cache, cmd_tx),
-            View::ArticleList => self.handle_article_list_keys(input, cache, cmd_tx),
-            View::ArticleView => self.handle_article_view_keys(input, cache, cmd_tx),
+            View::ArticleList => self.handle_article_list_keys(input, cache, cmd_tx, terminal),
+            View::ArticleView => self.handle_article_view_keys(input, cache, cmd_tx, terminal),
             View::Log => self.handle_log_keys(input),
             View::Help => {}
         }
@@ -438,6 +449,7 @@ impl App {
         input: InputEvent,
         cache: &Cache,
         cmd_tx: &mpsc::Sender<BackendCommand>,
+        terminal: &mut Terminal,
     ) {
         match input {
             InputEvent::Key(Key::Char('q')) => {
@@ -473,8 +485,7 @@ impl App {
                         self.selected_article = idx;
                         self.ensure_selected_article_visible(visible.len());
                         self.article_scroll = 0;
-                        self.view = View::ArticleView;
-                        self.mark_current_article_read(cmd_tx);
+                        self.enter_article_view(cmd_tx, terminal);
                         self.pending_redraw = true;
                     }
                 }
@@ -497,8 +508,7 @@ impl App {
             InputEvent::Key(Key::Enter) => {
                 if !self.filtered_article_indices().is_empty() {
                     self.article_scroll = 0;
-                    self.view = View::ArticleView;
-                    self.mark_current_article_read(cmd_tx);
+                    self.enter_article_view(cmd_tx, terminal);
                     self.pending_redraw = true;
                 }
             }
@@ -570,10 +580,56 @@ impl App {
         input: InputEvent,
         cache: &Cache,
         cmd_tx: &mpsc::Sender<BackendCommand>,
+        terminal: &mut Terminal,
     ) {
+        // URL picker mode
+        if self.url_picking {
+            match input {
+                InputEvent::Key(Key::Char('q')) => {
+                    self.url_picking = false;
+                    self.pending_redraw = true;
+                }
+                InputEvent::Key(Key::Down) | InputEvent::Key(Key::Char('j')) => {
+                    if self.url_cursor + 1 < self.article_urls.len() {
+                        self.url_cursor += 1;
+                        self.pending_redraw = true;
+                    }
+                }
+                InputEvent::Key(Key::Up) | InputEvent::Key(Key::Char('k')) => {
+                    if self.url_cursor > 0 {
+                        self.url_cursor -= 1;
+                        self.pending_redraw = true;
+                    }
+                }
+                InputEvent::Key(Key::Enter) => {
+                    if let Some(url) = self.article_urls.get(self.url_cursor).cloned() {
+                        self.status = match open_in_browser(&url, self.browser.as_deref()) {
+                            Ok(()) => format!("Opened [{}]", self.url_cursor + 1),
+                            Err(e) => format!("Failed to open browser: {}", e),
+                        };
+                    }
+                    self.url_picking = false;
+                    self.pending_redraw = true;
+                }
+                InputEvent::Key(Key::Char(c)) if c.is_ascii_digit() && c != '0' => {
+                    let idx = (c as usize) - ('1' as usize);
+                    if let Some(url) = self.article_urls.get(idx).cloned() {
+                        self.status = match open_in_browser(&url, self.browser.as_deref()) {
+                            Ok(()) => format!("Opened [{}]", idx + 1),
+                            Err(e) => format!("Failed to open browser: {}", e),
+                        };
+                    }
+                    self.url_picking = false;
+                    self.pending_redraw = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match input {
             InputEvent::Key(Key::Char('q')) => {
-                self.view = View::ArticleList;
+                self.leave_article_view(terminal);
                 self.pending_redraw = true;
             }
             InputEvent::Key(Key::Down) | InputEvent::Key(Key::Char('j')) => {
@@ -600,6 +656,7 @@ impl App {
                     self.selected_article += 1;
                     self.article_scroll = 0;
                     self.mark_current_article_read(cmd_tx);
+                    self.extract_current_article_urls();
                     self.pending_redraw = true;
                 }
             }
@@ -608,11 +665,37 @@ impl App {
                     self.selected_article -= 1;
                     self.article_scroll = 0;
                     self.mark_current_article_read(cmd_tx);
+                    self.extract_current_article_urls();
                     self.pending_redraw = true;
                 }
             }
             InputEvent::Key(Key::Char('u')) => self.toggle_current_read(cache, cmd_tx),
             InputEvent::Key(Key::Char('o')) => self.open_current_article(),
+            InputEvent::Key(Key::Char('b')) => {
+                if self.article_urls.is_empty() {
+                    self.status = "No URLs in article".to_string();
+                } else if self.article_urls.len() == 1 {
+                    let url = self.article_urls[0].clone();
+                    self.status = match open_in_browser(&url, self.browser.as_deref()) {
+                        Ok(()) => "Opened [1]".to_string(),
+                        Err(e) => format!("Failed to open browser: {}", e),
+                    };
+                } else {
+                    self.url_picking = true;
+                    self.url_cursor = 0;
+                }
+                self.pending_redraw = true;
+            }
+            InputEvent::Key(Key::Char(c)) if c.is_ascii_digit() && c != '0' => {
+                let idx = (c as usize) - ('1' as usize);
+                if let Some(url) = self.article_urls.get(idx).cloned() {
+                    self.status = match open_in_browser(&url, self.browser.as_deref()) {
+                        Ok(()) => format!("Opened [{}]", idx + 1),
+                        Err(e) => format!("Failed to open browser: {}", e),
+                    };
+                    self.pending_redraw = true;
+                }
+            }
             _ => {}
         }
     }
@@ -661,6 +744,60 @@ impl App {
         }
     }
 
+    fn enter_article_view(
+        &mut self,
+        cmd_tx: &mpsc::Sender<BackendCommand>,
+        terminal: &mut Terminal,
+    ) {
+        self.view = View::ArticleView;
+        self.mark_current_article_read(cmd_tx);
+        self.extract_current_article_urls();
+        self.url_picking = false;
+        if self.mouse_config {
+            terminal.set_mouse(false);
+        }
+    }
+
+    fn leave_article_view(&mut self, terminal: &mut Terminal) {
+        self.view = View::ArticleList;
+        self.article_urls.clear();
+        self.url_picking = false;
+        if self.mouse_config {
+            terminal.set_mouse(true);
+        }
+    }
+
+    fn extract_current_article_urls(&mut self) {
+        self.article_urls.clear();
+        let Some(article) = self.current_article().cloned() else {
+            return;
+        };
+        let mut seen = std::collections::HashSet::new();
+        // Always include the article's own link as [1]
+        if !article.link.is_empty() {
+            seen.insert(article.link.clone());
+            self.article_urls.push(article.link.clone());
+        }
+        let html_source = if article.content.trim().is_empty() {
+            &article.description
+        } else {
+            &article.content
+        };
+        // Extract href URLs from HTML source
+        for url in extract_href_urls(html_source) {
+            if seen.insert(url.clone()) {
+                self.article_urls.push(url);
+            }
+        }
+        // Also scan the plain text rendering for URLs
+        let text = html2text::from_read(html_source.as_bytes(), 200).unwrap_or_default();
+        for url in extract_plain_urls(&text) {
+            if seen.insert(url.clone()) {
+                self.article_urls.push(url);
+            }
+        }
+    }
+
     fn toggle_current_read(&mut self, _cache: &Cache, cmd_tx: &mpsc::Sender<BackendCommand>) {
         if let Some(article) = self.current_article().cloned() {
             let _ = cmd_tx.send(BackendCommand::MarkRead {
@@ -677,7 +814,8 @@ impl App {
 
     fn open_current_article(&mut self) {
         if let Some(article) = self.current_article() {
-            self.status = match open_in_browser(&article.link) {
+            let link = article.link.clone();
+            self.status = match open_in_browser(&link, self.browser.as_deref()) {
                 Ok(()) => "Opened in browser".to_string(),
                 Err(e) => format!("Failed to open browser: {}", e),
             };
@@ -892,7 +1030,7 @@ impl App {
         };
 
         let header = format!(
-            "{} [{}] (q back, j/k scroll, PgUp/PgDn, n/p next/prev, u toggle, o open)",
+            "{} [{}] (q back, j/k scroll, n/p nav, b urls, o open, u toggle)",
             views::strip_newlines(&article.title),
             if article.read { "read" } else { "unread" }
         );
@@ -905,10 +1043,19 @@ impl App {
         };
         let text = html2text::from_read(html.as_bytes(), width.max(20))
             .unwrap_or_else(|_| views::strip_newlines(html));
-        let rendered: Vec<String> = text
+        let mut rendered: Vec<String> = text
             .lines()
             .map(|line| views::truncate(line, width))
             .collect();
+
+        // Append Links section
+        if !self.article_urls.is_empty() {
+            rendered.push(String::new());
+            rendered.push("Links:".to_string());
+            for (i, url) in self.article_urls.iter().enumerate() {
+                rendered.push(views::truncate(&format!("  [{}] {}", i + 1, url), width));
+            }
+        }
 
         let body_rows = height.saturating_sub(2);
         let start = self.article_scroll.min(rendered.len());
@@ -919,15 +1066,28 @@ impl App {
             lines.push(String::new());
         }
 
-        let footer = match article.published.as_ref() {
-            Some(published) => format!(
-                "{} | {}",
-                article.link,
-                normalize_datetime_to_local(published).unwrap_or_else(|| "No date".to_string())
-            ),
-            None => article.link.clone(),
-        };
-        lines.push(self.style_status(views::truncate(&footer, width)));
+        if self.url_picking {
+            // Show URL picker in status bar
+            let picker = format!(
+                "URL [{}]: {} (j/k move, Enter open, 1-9 jump, q cancel)",
+                self.url_cursor + 1,
+                self.article_urls
+                    .get(self.url_cursor)
+                    .map(|s| s.as_str())
+                    .unwrap_or("")
+            );
+            lines.push(self.style_status(views::truncate(&picker, width)));
+        } else {
+            let footer = match article.published.as_ref() {
+                Some(published) => format!(
+                    "{} | {}",
+                    article.link,
+                    normalize_datetime_to_local(published).unwrap_or_else(|| "No date".to_string())
+                ),
+                None => article.link.clone(),
+            };
+            lines.push(self.style_status(views::truncate(&footer, width)));
+        }
     }
 
     fn render_help(&self, width: usize, height: usize, lines: &mut Vec<String>) {
@@ -1229,7 +1389,26 @@ impl App {
     }
 }
 
-fn open_in_browser(url: &str) -> Result<(), String> {
+fn open_in_browser(url: &str, browser_config: Option<&str>) -> Result<(), String> {
+    // 1. Config browser command (supports {url} template, executed via sh -c)
+    if let Some(cmd) = browser_config {
+        let shell_cmd = if cmd.contains("{url}") {
+            cmd.replace("{url}", url)
+        } else {
+            format!("{} {}", cmd, shell_quote(url))
+        };
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&shell_cmd)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("non-zero exit status: {}", status));
+    }
+
+    // 2. $BROWSER env var
     if let Ok(browser) = std::env::var("BROWSER") {
         let status = std::process::Command::new(browser)
             .arg(url)
@@ -1241,6 +1420,7 @@ fn open_in_browser(url: &str) -> Result<(), String> {
         return Err(format!("non-zero exit status: {}", status));
     }
 
+    // 3. Fallback openers
     for opener in ["xdg-open", "open"] {
         match std::process::Command::new(opener).arg(url).status() {
             Ok(status) if status.success() => return Ok(()),
@@ -1249,6 +1429,38 @@ fn open_in_browser(url: &str) -> Result<(), String> {
     }
 
     Err("no browser opener available".to_string())
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn extract_href_urls(html: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let needle = "href=\"";
+    let mut pos = 0;
+    while let Some(start) = html[pos..].find(needle) {
+        let url_start = pos + start + needle.len();
+        if let Some(end) = html[url_start..].find('"') {
+            let url = &html[url_start..url_start + end];
+            if url.starts_with("http://") || url.starts_with("https://") {
+                urls.push(url.to_string());
+            }
+        }
+        pos = url_start;
+    }
+    urls
+}
+
+fn extract_plain_urls(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for word in text.split(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"') {
+        let word = word.trim_end_matches(['.', ',', ')', ']', ';']);
+        if (word.starts_with("http://") || word.starts_with("https://")) && word.len() > 10 {
+            urls.push(word.to_string());
+        }
+    }
+    urls
 }
 
 fn parse_color_opt(v: &Option<String>) -> Option<(u8, u8, u8)> {

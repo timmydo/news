@@ -44,6 +44,18 @@ impl Terminal {
         })
     }
 
+    pub fn set_mouse(&mut self, enabled: bool) {
+        if enabled && !self.mouse_enabled {
+            print!("\x1b[?1000h\x1b[?1006h");
+            let _ = io::stdout().flush();
+            self.mouse_enabled = true;
+        } else if !enabled && self.mouse_enabled {
+            print!("\x1b[?1006l\x1b[?1000l");
+            let _ = io::stdout().flush();
+            // Keep mouse_enabled true so Drop still cleans up
+        }
+    }
+
     pub fn size(&self) -> (usize, usize) {
         let mut ws = unsafe { mem::zeroed::<libc::winsize>() };
         if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0 {

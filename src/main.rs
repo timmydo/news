@@ -14,11 +14,17 @@ fn main() {
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --help          Show this help message");
+        eprintln!("  --help-config   Show configuration file documentation");
         eprintln!("  --log           View debug log file");
         eprintln!("  --news-log      View news log file");
         eprintln!("  --clear-cache   Delete all cache files");
         eprintln!("  --offline       Browse cached articles only");
         eprintln!("  --config=PATH   Use a custom config file");
+        return;
+    }
+
+    if args.iter().any(|a| a == "--help-config") {
+        print_help_config();
         return;
     }
 
@@ -95,4 +101,38 @@ fn main() {
     let _ = cmd_tx.send(backend::BackendCommand::Shutdown);
     log::info("tn shutdown");
     log::news("tn session ended");
+}
+
+fn print_help_config() {
+    let xdg = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        format!("{}/.config", home)
+    });
+    eprintln!("Configuration file: {}/tn/config.toml", xdg);
+    eprintln!();
+    eprintln!("[ui]");
+    eprintln!("  page_size = 100              # max articles per page (default: 100)");
+    eprintln!("  mouse = true                 # enable mouse support (default: true)");
+    eprintln!("  sync_interval_secs = 300     # auto-refresh interval in seconds (default: 300)");
+    eprintln!(
+        "  browser = \"command {{url}}\"     # browser command; {{url}} is replaced with the URL"
+    );
+    eprintln!("                               # if no {{url}}, URL is appended as argument");
+    eprintln!(
+        "                               # executed via sh -c; falls back to $BROWSER, xdg-open"
+    );
+    eprintln!();
+    eprintln!("[theme]");
+    eprintln!("  bg = \"#002b36\"               # background color (#RRGGBB)");
+    eprintln!("  fg = \"#839496\"               # foreground color");
+    eprintln!("  bold_fg = \"#93a1a1\"           # bold/unread text color");
+    eprintln!("  selection_bg = \"#073642\"      # selected row background");
+    eprintln!("  selection_fg = \"#eee8d5\"      # selected row foreground");
+    eprintln!("  status_bg = \"#586e75\"         # status bar background");
+    eprintln!("  status_fg = \"#eee8d5\"         # status bar foreground");
+    eprintln!("  header_fg = \"#268bd2\"         # header text color");
+    eprintln!();
+    eprintln!("[[feed]]");
+    eprintln!("  name = \"Feed Name\"            # display name for the feed");
+    eprintln!("  url = \"https://example/rss\"   # RSS or Atom feed URL");
 }
