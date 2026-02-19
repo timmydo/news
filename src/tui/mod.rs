@@ -572,12 +572,25 @@ impl App {
             InputEvent::Key(Key::Char('u')) => {
                 // Mark as read and advance to next article; if already read, toggle unread
                 let was_unread = self.current_article().map(|a| !a.read).unwrap_or(false);
+                let visible_before = self.filtered_article_indices();
+                let selected_before = self.selected_article;
                 self.toggle_current_read(cache, cmd_tx);
                 if was_unread {
-                    let visible = self.filtered_article_indices();
-                    if self.selected_article + 1 < visible.len() {
-                        self.selected_article += 1;
-                        self.ensure_selected_article_visible(visible.len());
+                    if let Some(target_article_idx) =
+                        self.find_next_unread_article_idx(&visible_before, selected_before)
+                    {
+                        let visible_after = self.filtered_article_indices();
+                        if let Some(target_selected_idx) = visible_after
+                            .iter()
+                            .position(|&article_idx| article_idx == target_article_idx)
+                        {
+                            self.selected_article = target_selected_idx;
+                            self.ensure_selected_article_visible(visible_after.len());
+                            self.pending_redraw = true;
+                        }
+                    } else {
+                        let visible_after = self.filtered_article_indices();
+                        self.ensure_selected_article_visible(visible_after.len());
                         self.pending_redraw = true;
                     }
                 }
@@ -956,6 +969,20 @@ impl App {
             }
             self.recount_current_feed_unread();
         }
+    }
+
+    fn find_next_unread_article_idx(
+        &self,
+        visible_indices: &[usize],
+        selected_visible_idx: usize,
+    ) -> Option<usize> {
+        find_next_unread_visible_index(visible_indices, selected_visible_idx, |article_idx| {
+            self.articles
+                .get(article_idx)
+                .map(|article| !article.read)
+                .unwrap_or(false)
+        })
+        .and_then(|visible_idx| visible_indices.get(visible_idx).copied())
     }
 
     fn draw(&mut self, terminal: &Terminal) -> Result<(), String> {
@@ -1615,6 +1642,58 @@ fn html_escape(s: &str) -> String {
 fn parse_color_opt(v: &Option<String>) -> Option<(u8, u8, u8)> {
     v.as_deref()
         .and_then(|hex| crate::config::Theme::parse_color(hex).ok())
+}
+
+fn find_next_unread_visible_index<F>(
+    visible_indices: &[usize],
+    selected_visible_idx: usize,
+    mut is_unread: F,
+) -> Option<usize>
+where
+    F: FnMut(usize) -> bool,
+{
+    if selected_visible_idx >= visible_indices.len() {
+        return None;
+    }
+
+    for idx in (selected_visible_idx + 1)..visible_indices.len() {
+        if is_unread(visible_indices[idx]) {
+            return Some(idx);
+        }
+    }
+
+    (0..selected_visible_idx)
+        .rev()
+        .find(|&idx| is_unread(visible_indices[idx]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_next_unread_visible_index;
+
+    #[test]
+    fn next_unread_scans_downward_first() {
+        let visible = vec![0, 1, 2, 3, 4];
+        let unread = [false, false, false, true, true];
+        let next = find_next_unread_visible_index(&visible, 1, |article_idx| unread[article_idx]);
+        assert_eq!(next, Some(3));
+    }
+
+    #[test]
+    fn next_unread_falls_back_upward() {
+        let visible = vec![0, 1, 2, 3, 4];
+        let unread = [false, true, false, false, false];
+        let next = find_next_unread_visible_index(&visible, 2, |article_idx| unread[article_idx]);
+        assert_eq!(next, Some(1));
+    }
+
+    #[test]
+    fn next_unread_returns_none_when_missing() {
+        let visible = vec![0, 1, 2, 3, 4];
+        let unread = [false, false, false, false, false];
+        let next = find_next_unread_visible_index(&visible, 2, |article_idx| unread[article_idx]);
+        assert_eq!(next, None);
+    }
 }
 
 fn style_line(
