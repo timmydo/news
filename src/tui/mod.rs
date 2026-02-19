@@ -569,7 +569,22 @@ impl App {
                 self.status = "Refreshing feeds...".to_string();
                 self.pending_redraw = true;
             }
-            InputEvent::Key(Key::Char('u')) => self.toggle_current_read(cache, cmd_tx),
+            InputEvent::Key(Key::Char('u')) => {
+                // Mark as read and advance to next article; if already read, toggle unread
+                let was_unread = self.current_article().map(|a| !a.read).unwrap_or(false);
+                self.toggle_current_read(cache, cmd_tx);
+                if was_unread {
+                    let visible = self.filtered_article_indices();
+                    if self.selected_article + 1 < visible.len() {
+                        self.selected_article += 1;
+                        self.ensure_selected_article_visible(visible.len());
+                        self.pending_redraw = true;
+                    }
+                }
+            }
+            InputEvent::Key(Key::Char('H')) => {
+                self.open_html_digest();
+            }
             InputEvent::Key(Key::Char('o')) => self.open_current_article(),
             _ => {}
         }
@@ -821,6 +836,110 @@ impl App {
             };
             self.pending_redraw = true;
         }
+    }
+
+    fn open_html_digest(&mut self) {
+        let visible = self.filtered_article_indices();
+        if visible.is_empty() {
+            self.status = "No articles to export".to_string();
+            self.pending_redraw = true;
+            return;
+        }
+
+        let feed_name = match self.selected_feed_scope.as_ref() {
+            Some(FeedScope::All) => "[All]",
+            Some(FeedScope::Unread) => "[Unread]",
+            Some(FeedScope::Feed(url)) => self
+                .feeds
+                .iter()
+                .find(|f| &f.url == url)
+                .map(|f| f.name.as_str())
+                .unwrap_or("Articles"),
+            None => "Articles",
+        };
+
+        let mut html = String::new();
+        html.push_str("<!DOCTYPE html>\n<html>\n<head>\n");
+        html.push_str(&format!(
+            "    <title>{} - tn digest</title>\n",
+            html_escape(feed_name)
+        ));
+        html.push_str(concat!(
+            "    <style>\n",
+            "        body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; line-height: 1.6; }\n",
+            "        ul { list-style-type: none; padding: 0; }\n",
+            "        li { margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem; display: flex; align-items: baseline; flex-wrap: wrap; }\n",
+            "        .date { font-family: monospace; color: #666; font-size: 0.9rem; margin-right: 1rem; white-space: nowrap; }\n",
+            "        .feed { font-family: monospace; color: #999; font-size: 0.85rem; margin-right: 0.5rem; }\n",
+            "        .subject { font-weight: bold; font-size: 1.1rem; margin-right: 0.5rem; }\n",
+            "        .subject a { text-decoration: none; color: #0066cc; }\n",
+            "        .subject a:hover { text-decoration: underline; }\n",
+            "        .unread { font-weight: bold; }\n",
+            "    </style>\n",
+        ));
+        html.push_str("</head>\n<body>\n");
+        html.push_str(&format!(
+            "    <h1>{} - tn digest</h1>\n    <ul>\n",
+            html_escape(feed_name)
+        ));
+
+        let show_feed_source = matches!(
+            self.selected_feed_scope.as_ref(),
+            Some(FeedScope::All | FeedScope::Unread)
+        );
+
+        for &idx in &visible {
+            let article = &self.articles[idx];
+            let date = article
+                .published
+                .as_deref()
+                .and_then(normalize_datetime_to_local)
+                .unwrap_or_else(|| "No date".to_string());
+            let unread_class = if !article.read { " unread" } else { "" };
+            let feed_span = if show_feed_source {
+                format!(
+                    "<span class=\"feed\">[{}]</span>",
+                    html_escape(&article.feed_name)
+                )
+            } else {
+                String::new()
+            };
+            let title_html = if article.link.is_empty() {
+                html_escape(&article.title)
+            } else {
+                format!(
+                    "<a href=\"{}\">{}</a>",
+                    html_escape(&article.link),
+                    html_escape(&article.title)
+                )
+            };
+            html.push_str(&format!(
+                "        <li class=\"{}\"><span class=\"date\">{}</span>{}<span class=\"subject\">{}</span></li>\n",
+                unread_class.trim(),
+                html_escape(&date),
+                feed_span,
+                title_html,
+            ));
+        }
+
+        html.push_str("    </ul>\n</body>\n</html>\n");
+
+        // Write to temp file and open in browser
+        let dir = std::env::temp_dir();
+        let path = dir.join("tn-digest.html");
+        match std::fs::write(&path, &html) {
+            Ok(()) => {
+                let url = format!("file://{}", path.display());
+                self.status = match open_in_browser(&url, self.browser.as_deref()) {
+                    Ok(()) => format!("Opened digest ({} articles)", visible.len()),
+                    Err(e) => format!("Failed to open browser: {}", e),
+                };
+            }
+            Err(e) => {
+                self.status = format!("Failed to write digest: {}", e);
+            }
+        }
+        self.pending_redraw = true;
     }
 
     fn mark_current_article_read(&mut self, cmd_tx: &mpsc::Sender<BackendCommand>) {
@@ -1484,6 +1603,13 @@ fn extract_plain_urls(text: &str) -> Vec<String> {
         }
     }
     urls
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn parse_color_opt(v: &Option<String>) -> Option<(u8, u8, u8)> {

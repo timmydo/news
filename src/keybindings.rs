@@ -24,7 +24,8 @@ pub const ARTICLE_LIST: &[&str] = &[
     "Mouse click: open article",
     "g: refresh current feed",
     "G: refresh all feeds",
-    "u: toggle read",
+    "u: mark read + next (toggle if read)",
+    "H: open HTML digest in browser",
     "o: open link",
 ];
 
