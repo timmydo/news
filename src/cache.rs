@@ -1,4 +1,4 @@
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableTable, TableDefinition};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,7 +14,11 @@ pub struct Cache {
 
 impl Cache {
     pub fn open() -> Result<Cache, String> {
-        let path = Self::db_path();
+        let path = Self::default_db_path();
+        Self::open_at(path)
+    }
+
+    pub fn open_at(path: PathBuf) -> Result<Cache, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("create cache dir: {}", e))?;
         }
@@ -23,7 +27,7 @@ impl Cache {
         Ok(Cache { db: Arc::new(db) })
     }
 
-    fn db_path() -> PathBuf {
+    pub fn default_db_path() -> PathBuf {
         let xdg = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_default();
             format!("{}/.cache", home)
@@ -32,7 +36,11 @@ impl Cache {
     }
 
     pub fn clear() {
-        let path = Self::db_path();
+        let path = Self::default_db_path();
+        Self::clear_at(path);
+    }
+
+    pub fn clear_at(path: PathBuf) {
         if path.exists() {
             let _ = std::fs::remove_file(&path);
         }
@@ -100,6 +108,60 @@ impl Cache {
 
     pub fn article_exists(&self, hash: &str) -> bool {
         self.get_article(hash).is_some()
+    }
+
+    pub fn list_feed_urls(&self) -> Vec<String> {
+        let mut urls = Vec::<String>::new();
+        let txn = match self.db.begin_read() {
+            Ok(txn) => txn,
+            Err(_) => return urls,
+        };
+
+        if let Ok(table) = txn.open_table(FEED_INDEX) {
+            if let Ok(iter) = table.iter() {
+                for entry in iter {
+                    if let Ok((key, _)) = entry {
+                        urls.push(key.value().to_string());
+                    }
+                }
+            }
+        }
+        if let Ok(table) = txn.open_table(FEEDS) {
+            if let Ok(iter) = table.iter() {
+                for entry in iter {
+                    if let Ok((key, _)) = entry {
+                        urls.push(key.value().to_string());
+                    }
+                }
+            }
+        }
+
+        urls.sort();
+        urls.dedup();
+        urls
+    }
+
+    pub fn list_feed_articles(&self, feed_url: &str) -> Vec<Article> {
+        self.get_feed_index(feed_url)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|hash| self.get_article(hash))
+            .collect()
+    }
+
+    pub fn list_all_articles(&self) -> Vec<Article> {
+        let mut articles = Vec::new();
+        for url in self.list_feed_urls() {
+            articles.extend(self.list_feed_articles(&url));
+        }
+        articles
+    }
+
+    pub fn list_unread_articles(&self) -> Vec<Article> {
+        self.list_all_articles()
+            .into_iter()
+            .filter(|a| !a.read)
+            .collect()
     }
 }
 

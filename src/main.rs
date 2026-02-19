@@ -1,34 +1,54 @@
 mod backend;
 mod cache;
+mod cli;
 mod config;
 mod feed;
 mod keybindings;
 mod log;
 mod tui;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+use std::path::PathBuf;
 
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let opts = match CliOptions::parse(&args) {
+        Ok(opts) => opts,
+        Err(e) => {
+            eprintln!("{}", e);
+            eprintln!("Use --help for usage.");
+            std::process::exit(2);
+        }
+    };
+
+    if opts.help {
         eprintln!("Usage: tn [OPTIONS]");
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --help          Show this help message");
         eprintln!("  --help-config   Show configuration file documentation");
+        eprintln!("  --help-cli      Show CLI mode command documentation");
+        eprintln!("  --cli           Run newline-delimited JSON CLI mode");
         eprintln!("  --log           View debug log file");
         eprintln!("  --news-log      View news log file");
         eprintln!("  --clear-cache   Delete all cache files");
         eprintln!("  --offline       Browse cached articles only");
+        eprintln!("  --fetch-and-quit  Fetch all configured feeds into cache, then exit");
         eprintln!("  --config=PATH   Use a custom config file");
+        eprintln!("  --cache=PATH    Use a custom cache DB path");
         return;
     }
 
-    if args.iter().any(|a| a == "--help-config") {
+    if opts.help_config {
         print_help_config();
         return;
     }
 
-    if args.iter().any(|a| a == "--log") {
+    if opts.help_cli {
+        eprintln!("{}", cli::help_text());
+        return;
+    }
+
+    if opts.log {
         let path = log::debug_log_path();
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
@@ -41,7 +61,7 @@ fn main() {
         return;
     }
 
-    if args.iter().any(|a| a == "--news-log") {
+    if opts.news_log {
         let path = log::news_log_path();
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
@@ -61,12 +81,49 @@ fn main() {
         log::news("tn session started");
     }
 
-    let config_path = args
-        .iter()
-        .find_map(|a| a.strip_prefix("--config="))
-        .map(|s| s.to_string());
+    if opts.clear_cache {
+        if let Some(path) = opts.cache_path.clone() {
+            cache::Cache::clear_at(path);
+        } else {
+            cache::Cache::clear();
+        }
+        log::info("cache cleared");
+        eprintln!("Cache cleared.");
+        return;
+    }
 
-    let config = match config::Config::load(config_path.as_deref()) {
+    let cache = if let Some(path) = opts.cache_path.clone() {
+        match cache::Cache::open_at(path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error(format!("failed to open cache: {}", e));
+                eprintln!("Failed to open cache: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match cache::Cache::open() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error(format!("failed to open cache: {}", e));
+                eprintln!("Failed to open cache: {}", e);
+                std::process::exit(1);
+            }
+        }
+    };
+
+    if opts.cli {
+        if let Err(e) = cli::run(&cache) {
+            log::error(format!("cli error: {}", e));
+            eprintln!("CLI error: {}", e);
+            std::process::exit(1);
+        }
+        log::info("tn cli shutdown");
+        log::news("tn cli session ended");
+        return;
+    }
+
+    let config = match config::Config::load(opts.config_path.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             log::error(format!("config load failed: {}", e));
@@ -75,23 +132,60 @@ fn main() {
         }
     };
 
-    if args.iter().any(|a| a == "--clear-cache") {
-        cache::Cache::clear();
-        log::info("cache cleared");
-        eprintln!("Cache cleared.");
+    if opts.fetch_and_quit {
+        let total_feeds = config.feeds.len();
+        let (cmd_tx, resp_rx) = backend::spawn(&config, cache.clone());
+        if let Err(e) = cmd_tx.send(backend::BackendCommand::FetchAllFeeds) {
+            log::error(format!("failed to request fetch-all: {}", e));
+            eprintln!("Failed to start fetch: {}", e);
+            std::process::exit(1);
+        }
+
+        let mut completed = 0usize;
+        let mut had_errors = false;
+        while completed < total_feeds {
+            match resp_rx.recv() {
+                Ok(backend::BackendResponse::FeedArticles {
+                    feed_name,
+                    feed_url,
+                    articles,
+                    total,
+                    unread,
+                    ..
+                }) => {
+                    completed += 1;
+                    eprintln!(
+                        "Fetched {} ({}) new={} total={} unread={}",
+                        feed_name,
+                        feed_url,
+                        articles.len(),
+                        total,
+                        unread
+                    );
+                }
+                Ok(backend::BackendResponse::FetchError { feed_url, error }) => {
+                    completed += 1;
+                    had_errors = true;
+                    eprintln!("Fetch error {}: {}", feed_url, error);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    log::error(format!("fetch-and-quit response channel error: {}", e));
+                    eprintln!("Fetch failed: {}", e);
+                    let _ = cmd_tx.send(backend::BackendCommand::Shutdown);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        let _ = cmd_tx.send(backend::BackendCommand::Shutdown);
+        if had_errors {
+            std::process::exit(1);
+        }
         return;
     }
 
-    let offline = args.iter().any(|a| a == "--offline");
-    let cache = match cache::Cache::open() {
-        Ok(c) => c,
-        Err(e) => {
-            log::error(format!("failed to open cache: {}", e));
-            eprintln!("Failed to open cache: {}", e);
-            std::process::exit(1);
-        }
-    };
-
+    let offline = opts.offline;
     let (cmd_tx, resp_rx) = backend::spawn(&config, cache.clone());
     if let Err(e) = tui::run(&config, &cache, &cmd_tx, &resp_rx, offline) {
         log::error(format!("tui error: {}", e));
@@ -101,6 +195,70 @@ fn main() {
     let _ = cmd_tx.send(backend::BackendCommand::Shutdown);
     log::info("tn shutdown");
     log::news("tn session ended");
+}
+
+#[derive(Default)]
+struct CliOptions {
+    help: bool,
+    help_config: bool,
+    help_cli: bool,
+    cli: bool,
+    log: bool,
+    news_log: bool,
+    clear_cache: bool,
+    offline: bool,
+    fetch_and_quit: bool,
+    config_path: Option<String>,
+    cache_path: Option<PathBuf>,
+}
+
+impl CliOptions {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let mut opts = Self::default();
+        let mut i = 0usize;
+        while i < args.len() {
+            let arg = &args[i];
+            match arg.as_str() {
+                "--help" | "-h" => opts.help = true,
+                "--help-config" => opts.help_config = true,
+                "--help-cli" => opts.help_cli = true,
+                "--cli" => {
+                    opts.cli = true;
+                    opts.offline = true;
+                }
+                "--log" => opts.log = true,
+                "--news-log" => opts.news_log = true,
+                "--clear-cache" => opts.clear_cache = true,
+                "--offline" => opts.offline = true,
+                "--fetch-and-quit" => opts.fetch_and_quit = true,
+                "--config" => {
+                    i += 1;
+                    let value = args
+                        .get(i)
+                        .ok_or_else(|| "--config requires a path".to_string())?;
+                    opts.config_path = Some(value.clone());
+                }
+                "--cache" => {
+                    i += 1;
+                    let value = args
+                        .get(i)
+                        .ok_or_else(|| "--cache requires a path".to_string())?;
+                    opts.cache_path = Some(PathBuf::from(value));
+                }
+                _ => {
+                    if let Some(value) = arg.strip_prefix("--config=") {
+                        opts.config_path = Some(value.to_string());
+                    } else if let Some(value) = arg.strip_prefix("--cache=") {
+                        opts.cache_path = Some(PathBuf::from(value));
+                    } else {
+                        return Err(format!("unknown argument: {}", arg));
+                    }
+                }
+            }
+            i += 1;
+        }
+        Ok(opts)
+    }
 }
 
 fn print_help_config() {

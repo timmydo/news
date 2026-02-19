@@ -15,12 +15,15 @@ The current RSS workflow it replaces:
 - `rss_digest.py` generates an HTML digest of unread items
 
 This project consolidates that pipeline into a single Rust binary with a TUI.
+It also supports a non-interactive JSON-over-stdin/stdout CLI mode for scripting.
 
 ## Build / Run / Test
 
 ```bash
 CC=gcc cargo build
 CC=gcc cargo run
+CC=gcc cargo run -- --help-cli
+CC=gcc cargo run -- --cli --offline
 CC=gcc cargo test
 CC=gcc cargo clippy
 cargo fmt -- --check
@@ -29,6 +32,12 @@ cargo fmt -- --check
 The `CC=gcc` prefix is required because the `ring` crate (via `ureq`) needs a C
 compiler and the system does not have `cc` on `$PATH` (Guix provides `gcc`
 instead).
+
+Useful runtime flags:
+- `--offline` — disable fetching and browse cached data.
+- `--cli` — newline-delimited JSON protocol on stdin/stdout; implies `--offline`.
+- `--help-cli` — comprehensive command/protocol docs for `--cli`.
+- `--cache=PATH` (or `--cache PATH`) — use alternate redb file location.
 
 ## Configuration
 
@@ -82,7 +91,8 @@ Follows the same multi-threaded pattern as tmc:
 
 ### Source layout
 
-- `src/main.rs` — CLI flags, config loading, TUI bootstrap.
+- `src/main.rs` — CLI flags, config loading, mode dispatch (TUI vs CLI).
+- `src/cli.rs` — newline-delimited JSON command handler for automation/integration use.
 - `src/config.rs` — TOML config parsing for `[ui]`, `[theme]`, and `[[feed]]`.
 - `src/backend.rs` — worker thread + `mpsc` command/response channels.
 - `src/feed.rs` — RSS/Atom fetching and parsing (using `ureq` + XML parsing).
@@ -94,6 +104,7 @@ Follows the same multi-threaded pattern as tmc:
   - `tui/views/` — feed list, article list, article view, help.
 - `src/keybindings.rs` — centralized keybinding definitions.
 - `src/log.rs` — file logging.
+- `tests/cli_integration.rs` — integration tests for `--cli` request/response behavior.
 
 ### Threading model
 
@@ -114,6 +125,8 @@ Follows the same multi-threaded pattern as tmc:
 
 Location: `~/.cache/tn/tn.redb`
 
+Override path: `--cache=PATH`
+
 Tables:
 - `articles` — keyed by hash(link+title), stores serialized article (title, link, description, content, published date, feed name, read flag).
 - `feeds` — keyed by feed URL, stores feed metadata (title, last fetch time).
@@ -125,6 +138,23 @@ Tables:
 - Article list: `q` back, `j/k/n/p/arrows` navigate, `Enter` open, `u` toggle read, `o` open link in browser, `g` refresh.
 - Article view: `q` back, `j/k/n/p/arrows/Space/PgUp/PgDn` scroll, `o` open in browser, `u` toggle read, `n/p` next/prev article.
 - Global: `?` help.
+
+### CLI mode protocol (`--cli`)
+
+- Transport: one JSON object per input line on stdin; one JSON object per output line on stdout.
+- Reads and mutates cache only; no network fetching.
+- Root-level folder listing includes virtual folders: `all`, `unread`, plus feed URL folders.
+- Commands:
+  - `{"cmd":"list_folders"}`
+  - `{"cmd":"list_articles","folder":"all|unread|<feed_url>","offset":0,"limit":100}`
+  - `{"cmd":"get_article","hash":"<article_hash>"}`
+  - `{"cmd":"mark_read","hash":"<article_hash>","read":true}`
+  - `{"cmd":"mark_folder_read","folder":"all|unread|<feed_url>"}`
+  - `{"cmd":"help"}`
+  - `{"cmd":"quit"}`
+- Response shape:
+  - Success: `{"ok":true,...}`
+  - Error: `{"ok":false,"error":"..."}`
 
 ## Constraints and Non-Goals
 
