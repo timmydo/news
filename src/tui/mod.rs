@@ -1373,10 +1373,16 @@ impl App {
                 }
             }
         }
+        let unread_oldest_first =
+            matches!(self.selected_feed_scope.as_ref(), Some(FeedScope::Unread));
         self.articles.sort_by(|a, b| {
             let a_ts = datetime_sort_key(a.published.as_deref()).unwrap_or(i64::MIN);
             let b_ts = datetime_sort_key(b.published.as_deref()).unwrap_or(i64::MIN);
-            b_ts.cmp(&a_ts).then_with(|| a.title.cmp(&b.title))
+            if unread_oldest_first {
+                a_ts.cmp(&b_ts).then_with(|| a.title.cmp(&b.title))
+            } else {
+                b_ts.cmp(&a_ts).then_with(|| a.title.cmp(&b.title))
+            }
         });
         let visible_len = self.filtered_article_indices().len();
         if self.selected_article >= visible_len {
