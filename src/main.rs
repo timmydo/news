@@ -270,6 +270,9 @@ fn print_help_config() {
     eprintln!();
     eprintln!("[ui]");
     eprintln!("  page_size = 100              # max articles per page (default: 100)");
+    eprintln!(
+        "  scrolloff = 0                # min context lines above/below selection (default: 0)"
+    );
     eprintln!("  mouse = true                 # enable mouse support (default: true)");
     eprintln!("  sync_interval_secs = 300     # auto-refresh interval in seconds (default: 300)");
     eprintln!(

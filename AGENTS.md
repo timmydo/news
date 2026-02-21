@@ -46,6 +46,7 @@ Default path: `$XDG_CONFIG_HOME/tn/config.toml` (or `~/.config/tn/config.toml`).
 ```toml
 [ui]
 page_size = 100
+scrolloff = 0                  # min context rows above/below selection
 mouse = true
 sync_interval_secs = 300           # how often to re-fetch feeds (default: 300)
 

@@ -106,6 +106,7 @@ struct App {
     last_updated: Option<String>,
     last_size: (usize, usize),
     page_size: usize,
+    scrolloff: usize,
     theme: UiTheme,
     log_tab: LogTab,
     log_scroll: usize,
@@ -182,6 +183,7 @@ impl App {
             last_updated,
             last_size: (80, 24),
             page_size: config.ui.page_size.max(1),
+            scrolloff: config.ui.scrolloff,
             theme: UiTheme::from_config(&config.theme),
             log_tab: LogTab::News,
             log_scroll: 0,
@@ -1519,14 +1521,24 @@ impl App {
         }
         self.selected_feed = self.selected_feed.min(total_rows - 1);
         let list_rows = self.feed_list_rows().max(1);
+        let scrolloff = self.scrolloff.min(list_rows.saturating_sub(1));
         self.feed_list_scroll = self
             .feed_list_scroll
             .min(total_rows.saturating_sub(list_rows));
-        if self.selected_feed < self.feed_list_scroll {
-            self.feed_list_scroll = self.selected_feed;
-        } else if self.selected_feed >= self.feed_list_scroll + list_rows {
-            self.feed_list_scroll = self.selected_feed + 1 - list_rows;
+        if self.selected_feed < self.feed_list_scroll.saturating_add(scrolloff) {
+            self.feed_list_scroll = self.selected_feed.saturating_sub(scrolloff);
+        } else if self.selected_feed.saturating_add(scrolloff)
+            >= self.feed_list_scroll.saturating_add(list_rows)
+        {
+            self.feed_list_scroll = self
+                .selected_feed
+                .saturating_add(scrolloff)
+                .saturating_add(1)
+                .saturating_sub(list_rows);
         }
+        self.feed_list_scroll = self
+            .feed_list_scroll
+            .min(total_rows.saturating_sub(list_rows));
     }
 
     fn ensure_selected_article_visible(&mut self, visible_len: usize) {
@@ -1537,14 +1549,24 @@ impl App {
         }
         self.selected_article = self.selected_article.min(visible_len - 1);
         let list_rows = self.article_list_rows().max(1);
+        let scrolloff = self.scrolloff.min(list_rows.saturating_sub(1));
         self.article_list_scroll = self
             .article_list_scroll
             .min(visible_len.saturating_sub(list_rows));
-        if self.selected_article < self.article_list_scroll {
-            self.article_list_scroll = self.selected_article;
-        } else if self.selected_article >= self.article_list_scroll + list_rows {
-            self.article_list_scroll = self.selected_article + 1 - list_rows;
+        if self.selected_article < self.article_list_scroll.saturating_add(scrolloff) {
+            self.article_list_scroll = self.selected_article.saturating_sub(scrolloff);
+        } else if self.selected_article.saturating_add(scrolloff)
+            >= self.article_list_scroll.saturating_add(list_rows)
+        {
+            self.article_list_scroll = self
+                .selected_article
+                .saturating_add(scrolloff)
+                .saturating_add(1)
+                .saturating_sub(list_rows);
         }
+        self.article_list_scroll = self
+            .article_list_scroll
+            .min(visible_len.saturating_sub(list_rows));
     }
 }
 

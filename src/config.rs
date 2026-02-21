@@ -15,6 +15,8 @@ pub struct Config {
 pub struct UiConfig {
     #[serde(default = "default_page_size")]
     pub page_size: usize,
+    #[serde(default = "default_scrolloff")]
+    pub scrolloff: usize,
     #[serde(default = "default_true")]
     pub mouse: bool,
     #[serde(default = "default_sync_interval")]
@@ -26,6 +28,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             page_size: default_page_size(),
+            scrolloff: default_scrolloff(),
             mouse: true,
             sync_interval_secs: default_sync_interval(),
             browser: None,
@@ -35,6 +38,10 @@ impl Default for UiConfig {
 
 fn default_page_size() -> usize {
     100
+}
+
+fn default_scrolloff() -> usize {
+    0
 }
 
 fn default_true() -> bool {
@@ -137,6 +144,7 @@ mod tests {
         assert_eq!(config.feeds.len(), 1);
         assert_eq!(config.feeds[0].name, "Test");
         assert_eq!(config.ui.page_size, 100);
+        assert_eq!(config.ui.scrolloff, 0);
         assert_eq!(config.ui.sync_interval_secs, 300);
     }
 
@@ -145,6 +153,7 @@ mod tests {
         let toml_str = concat!(
             "[ui]\n",
             "page_size = 50\n",
+            "scrolloff = 3\n",
             "mouse = false\n",
             "sync_interval_secs = 600\n",
             "\n",
@@ -163,6 +172,7 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.feeds.len(), 2);
         assert_eq!(config.ui.page_size, 50);
+        assert_eq!(config.ui.scrolloff, 3);
         assert!(!config.ui.mouse);
         assert_eq!(config.theme.bg.as_deref(), Some(hex("002b36")).as_deref());
     }

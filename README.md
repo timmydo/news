@@ -28,6 +28,7 @@ Example:
 ```toml
 [ui]
 page_size = 100
+scrolloff = 0
 mouse = true
 sync_interval_secs = 300
 
@@ -45,6 +46,9 @@ header_fg = "#268bd2"
 name = "Hacker News"
 url = "https://news.ycombinator.com/rss"
 ```
+
+`ui.scrolloff` controls the minimum number of list rows kept visible above and
+below the current selection while moving in feed/article lists.
 
 ## Usage
 
