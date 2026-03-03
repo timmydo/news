@@ -28,7 +28,7 @@ struct FeedRow {
 enum View {
     FeedList,
     ArticleList,
-    ArticleView,
+    Article,
     Log,
     Help,
 }
@@ -342,7 +342,7 @@ impl App {
         match self.view {
             View::FeedList => self.handle_feed_keys(input, cache, cmd_tx),
             View::ArticleList => self.handle_article_list_keys(input, cache, cmd_tx, terminal),
-            View::ArticleView => self.handle_article_view_keys(input, cache, cmd_tx, terminal),
+            View::Article => self.handle_article_view_keys(input, cache, cmd_tx, terminal),
             View::Log => self.handle_log_keys(input),
             View::Help => {}
         }
@@ -801,7 +801,7 @@ impl App {
         cmd_tx: &mpsc::Sender<BackendCommand>,
         terminal: &mut Terminal,
     ) {
-        self.view = View::ArticleView;
+        self.view = View::Article;
         self.mark_current_article_read(cmd_tx);
         self.extract_current_article_urls();
         self.url_picking = false;
@@ -1034,7 +1034,7 @@ impl App {
             View::ArticleList => {
                 self.render_article_list(width, content_height, &mut content_lines)
             }
-            View::ArticleView => {
+            View::Article => {
                 self.render_article_view(width, content_height, &mut content_lines)
             }
             View::Log => self.render_log_view(width, content_height, &mut content_lines),
@@ -1732,8 +1732,8 @@ where
         return None;
     }
 
-    for idx in (selected_visible_idx + 1)..visible_indices.len() {
-        if is_unread(visible_indices[idx]) {
+    for (idx, &vi) in visible_indices.iter().enumerate().skip(selected_visible_idx + 1) {
+        if is_unread(vi) {
             return Some(idx);
         }
     }

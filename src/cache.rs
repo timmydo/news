@@ -119,19 +119,15 @@ impl Cache {
 
         if let Ok(table) = txn.open_table(FEED_INDEX) {
             if let Ok(iter) = table.iter() {
-                for entry in iter {
-                    if let Ok((key, _)) = entry {
-                        urls.push(key.value().to_string());
-                    }
+                for (key, _) in iter.flatten() {
+                    urls.push(key.value().to_string());
                 }
             }
         }
         if let Ok(table) = txn.open_table(FEEDS) {
             if let Ok(iter) = table.iter() {
-                for entry in iter {
-                    if let Ok((key, _)) = entry {
-                        urls.push(key.value().to_string());
-                    }
+                for (key, _) in iter.flatten() {
+                    urls.push(key.value().to_string());
                 }
             }
         }

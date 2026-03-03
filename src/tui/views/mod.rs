@@ -13,5 +13,5 @@ pub fn truncate(s: &str, width: usize) -> String {
 }
 
 pub fn strip_newlines(s: &str) -> String {
-    s.replace('\n', " ").replace('\r', " ")
+    s.replace(['\n', '\r'], " ")
 }
