@@ -8,6 +8,10 @@ use crate::feed::{datetime_sort_key, Article};
 
 const MAX_LIMIT: usize = 1000;
 
+fn default_search_folder() -> String {
+    "all".to_string()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 enum Command {
@@ -28,6 +32,15 @@ enum Command {
     },
     MarkFolderRead {
         folder: String,
+    },
+    SearchArticles {
+        query: String,
+        #[serde(default = "default_search_folder")]
+        folder: String,
+        #[serde(default)]
+        offset: usize,
+        #[serde(default)]
+        limit: Option<usize>,
     },
     Help,
     Quit,
@@ -215,6 +228,64 @@ fn handle_command(cache: &Cache, command: Command) -> serde_json::Value {
                 "updated": hashes.len(),
             })
         }
+        Command::SearchArticles {
+            query,
+            folder,
+            offset,
+            limit,
+        } => {
+            let limit = limit.unwrap_or(MAX_LIMIT).min(MAX_LIMIT);
+            let articles = match folder_articles(cache, &folder) {
+                Ok(articles) => sort_articles(articles),
+                Err(error) => {
+                    return json!({
+                        "ok": false,
+                        "error": error,
+                    })
+                }
+            };
+
+            let query_lower = query.to_lowercase();
+            let matched: Vec<_> = articles
+                .into_iter()
+                .filter(|a| {
+                    let hay = format!(
+                        "{} {} {}",
+                        a.title.to_lowercase(),
+                        a.description.to_lowercase(),
+                        a.content.to_lowercase()
+                    );
+                    hay.contains(&query_lower)
+                })
+                .collect();
+
+            let total = matched.len();
+            let items: Vec<_> = matched
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|a| {
+                    json!({
+                        "hash": a.hash,
+                        "title": a.title,
+                        "link": a.link,
+                        "published": a.published,
+                        "feed_name": a.feed_name,
+                        "read": a.read,
+                    })
+                })
+                .collect();
+
+            json!({
+                "ok": true,
+                "query": query,
+                "folder": folder,
+                "offset": offset,
+                "limit": limit,
+                "total": total,
+                "articles": items,
+            })
+        }
         Command::Help => json!({
             "ok": true,
             "help": help_text(),
@@ -272,6 +343,10 @@ pub fn help_text() -> String {
         "",
         "- {\"cmd\":\"mark_folder_read\",\"folder\":\"all|unread|<feed_url>\"}",
         "  Marks all articles in a folder as read.",
+        "",
+        "- {\"cmd\":\"search_articles\",\"query\":\"<text>\",\"folder\":\"all\",\"offset\":0,\"limit\":100}",
+        "  Case-insensitive substring search on title, description, and content.",
+        "  folder defaults to \"all\". Returns matching articles with total match count.",
         "",
         "- {\"cmd\":\"help\"}",
         "  Returns this command documentation as a string.",

@@ -151,6 +151,7 @@ Tables:
   - `{"cmd":"get_article","hash":"<article_hash>"}`
   - `{"cmd":"mark_read","hash":"<article_hash>","read":true}`
   - `{"cmd":"mark_folder_read","folder":"all|unread|<feed_url>"}`
+  - `{"cmd":"search_articles","query":"<text>","folder":"all","offset":0,"limit":100}`
   - `{"cmd":"help"}`
   - `{"cmd":"quit"}`
 - Response shape:
