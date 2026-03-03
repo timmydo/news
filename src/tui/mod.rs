@@ -117,6 +117,7 @@ struct App {
     article_urls: Vec<String>,
     url_picking: bool,
     url_cursor: usize,
+    pending_user_fetches: usize,
 }
 
 impl UiTheme {
@@ -194,6 +195,7 @@ impl App {
             article_urls: Vec::new(),
             url_picking: false,
             url_cursor: 0,
+            pending_user_fetches: 0,
         }
     }
 
@@ -207,36 +209,44 @@ impl App {
                 unread,
                 articles,
             } => {
-                if let Some(row) = self.feeds.iter_mut().find(|f| f.url == feed_url) {
-                    row.total = total;
-                    row.unread = unread;
-                    row.last_updated = normalize_datetime_to_local(&fetched_at);
-                    row.last_error = None;
+                if self.pending_user_fetches > 0 {
+                    self.pending_user_fetches -= 1;
+                    if let Some(row) = self.feeds.iter_mut().find(|f| f.url == feed_url) {
+                        row.total = total;
+                        row.unread = unread;
+                        row.last_updated = normalize_datetime_to_local(&fetched_at);
+                        row.last_error = None;
+                    }
+                    if matches!(
+                        self.selected_feed_scope.as_ref(),
+                        Some(FeedScope::Feed(url)) if url == &feed_url
+                    ) || matches!(
+                        self.selected_feed_scope.as_ref(),
+                        Some(FeedScope::All | FeedScope::Unread)
+                    ) {
+                        self.reload_articles(cache);
+                    }
+                    self.last_updated = Some(fetched_at);
+                    self.status = if articles.is_empty() {
+                        format!("{}: no new items", feed_name)
+                    } else {
+                        format!(
+                            "{}: {} new item(s), {} total ({} unread)",
+                            feed_name,
+                            articles.len(),
+                            total,
+                            unread
+                        )
+                    };
+                    self.pending_redraw = true;
                 }
-                if matches!(
-                    self.selected_feed_scope.as_ref(),
-                    Some(FeedScope::Feed(url)) if url == &feed_url
-                ) || matches!(
-                    self.selected_feed_scope.as_ref(),
-                    Some(FeedScope::All | FeedScope::Unread)
-                ) {
-                    self.reload_articles(cache);
-                }
-                self.last_updated = Some(fetched_at);
-                self.status = if articles.is_empty() {
-                    format!("{}: no new items", feed_name)
-                } else {
-                    format!(
-                        "{}: {} new item(s), {} total ({} unread)",
-                        feed_name,
-                        articles.len(),
-                        total,
-                        unread
-                    )
-                };
-                self.pending_redraw = true;
+                // Auto-sync results are silently ignored; data is in the cache
+                // and will be shown when the user presses 'g' to refresh.
             }
             BackendResponse::FetchError { feed_url, error } => {
+                if self.pending_user_fetches > 0 {
+                    self.pending_user_fetches -= 1;
+                }
                 if let Some(row) = self.feeds.iter_mut().find(|f| f.url == feed_url) {
                     row.last_error = Some(error.clone());
                 }
@@ -395,6 +405,7 @@ impl App {
                 self.pending_redraw = true;
             }
             InputEvent::Key(Key::Char('g')) => {
+                self.reload_feeds_from_cache(cache);
                 match self.scope_for_selected_feed() {
                     FeedScope::Feed(url) => {
                         let feed_name = self
@@ -403,10 +414,12 @@ impl App {
                             .find(|f| f.url == url)
                             .map(|f| f.name.as_str())
                             .unwrap_or("feed");
+                        self.pending_user_fetches += 1;
                         let _ = cmd_tx.send(BackendCommand::FetchFeed { url });
                         self.status = format!("Refreshing {}...", feed_name);
                     }
                     FeedScope::All | FeedScope::Unread => {
+                        self.pending_user_fetches += self.feeds.len();
                         let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
                         self.status = "Refreshing feeds...".to_string();
                     }
@@ -414,6 +427,8 @@ impl App {
                 self.pending_redraw = true;
             }
             InputEvent::Key(Key::Char('G')) => {
+                self.reload_feeds_from_cache(cache);
+                self.pending_user_fetches += self.feeds.len();
                 let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
                 self.status = "Refreshing feeds...".to_string();
                 self.pending_redraw = true;
@@ -552,13 +567,17 @@ impl App {
                 self.pending_redraw = true;
             }
             InputEvent::Key(Key::Char('g')) => {
+                self.reload_feeds_from_cache(cache);
+                self.reload_articles(cache);
                 if let Some(scope) = self.selected_feed_scope.as_ref() {
                     match scope {
                         FeedScope::Feed(url) => {
+                            self.pending_user_fetches += 1;
                             let _ = cmd_tx.send(BackendCommand::FetchFeed { url: url.clone() });
                             self.status = "Refreshing feed...".to_string();
                         }
                         FeedScope::All | FeedScope::Unread => {
+                            self.pending_user_fetches += self.feeds.len();
                             let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
                             self.status = "Refreshing feeds...".to_string();
                         }
@@ -567,6 +586,9 @@ impl App {
                 }
             }
             InputEvent::Key(Key::Char('G')) => {
+                self.reload_feeds_from_cache(cache);
+                self.reload_articles(cache);
+                self.pending_user_fetches += self.feeds.len();
                 let _ = cmd_tx.send(BackendCommand::FetchAllFeeds);
                 self.status = "Refreshing feeds...".to_string();
                 self.pending_redraw = true;
@@ -1330,6 +1352,32 @@ impl App {
 
     fn style_unread(&self, s: String) -> String {
         style_line(&s, self.theme.bold_fg, None, true, false)
+    }
+
+    fn reload_feeds_from_cache(&mut self, cache: &Cache) {
+        let mut latest_ts = None;
+        let mut latest_str = None;
+        for row in &mut self.feeds {
+            let hashes = cache.get_feed_index(&row.url).unwrap_or_default();
+            row.total = hashes.len();
+            row.unread = hashes
+                .iter()
+                .filter(|hash| cache.get_article(hash).map(|a| !a.read).unwrap_or(false))
+                .count();
+            if let Some(meta) = cache.get_feed_meta(&row.url) {
+                row.last_updated = normalize_datetime_to_local(&meta.last_fetched);
+                row.last_error = None;
+                if let Some(ts) = datetime_sort_key(Some(&meta.last_fetched)) {
+                    if latest_ts.map(|cur| ts > cur).unwrap_or(true) {
+                        latest_ts = Some(ts);
+                        latest_str = Some(meta.last_fetched.clone());
+                    }
+                }
+            }
+        }
+        if let Some(s) = latest_str {
+            self.last_updated = Some(s);
+        }
     }
 
     fn reload_articles(&mut self, cache: &Cache) {
