@@ -118,6 +118,7 @@ struct App {
     url_picking: bool,
     url_cursor: usize,
     pending_user_fetches: usize,
+    pending_read_mutations: HashMap<String, bool>,
 }
 
 impl UiTheme {
@@ -196,6 +197,7 @@ impl App {
             url_picking: false,
             url_cursor: 0,
             pending_user_fetches: 0,
+            pending_read_mutations: HashMap::new(),
         }
     }
 
@@ -206,14 +208,15 @@ impl App {
                 feed_name,
                 fetched_at,
                 total,
-                unread,
+                unread: _,
                 articles,
             } => {
                 if self.pending_user_fetches > 0 {
                     self.pending_user_fetches -= 1;
+                    let effective_unread = self.feed_unread_count_from_cache(cache, &feed_url);
                     if let Some(row) = self.feeds.iter_mut().find(|f| f.url == feed_url) {
                         row.total = total;
-                        row.unread = unread;
+                        row.unread = effective_unread;
                         row.last_updated = normalize_datetime_to_local(&fetched_at);
                         row.last_error = None;
                     }
@@ -235,7 +238,7 @@ impl App {
                             feed_name,
                             articles.len(),
                             total,
-                            unread
+                            effective_unread
                         )
                     };
                     self.pending_redraw = true;
@@ -254,8 +257,16 @@ impl App {
                 self.pending_redraw = true;
             }
             BackendResponse::ArticleMutation { hash, read } => {
+                let effective_read = match self.pending_read_mutations.get(&hash).copied() {
+                    Some(pending_read) if pending_read == read => {
+                        self.pending_read_mutations.remove(&hash);
+                        read
+                    }
+                    Some(pending_read) => pending_read,
+                    None => read,
+                };
                 if let Some(article) = self.articles.iter_mut().find(|a| a.hash == hash) {
-                    article.read = read;
+                    article.read = effective_read;
                 }
                 self.recount_current_feed_unread();
                 self.pending_redraw = true;
@@ -852,12 +863,15 @@ impl App {
 
     fn toggle_current_read(&mut self, _cache: &Cache, cmd_tx: &mpsc::Sender<BackendCommand>) {
         if let Some(article) = self.current_article().cloned() {
+            let read = !article.read;
             let _ = cmd_tx.send(BackendCommand::MarkRead {
                 hash: article.hash.clone(),
-                read: !article.read,
+                read,
             });
+            self.pending_read_mutations
+                .insert(article.hash.clone(), read);
             if let Some(local) = self.articles.iter_mut().find(|a| a.hash == article.hash) {
-                local.read = !article.read;
+                local.read = read;
             }
             self.recount_current_feed_unread();
             self.pending_redraw = true;
@@ -988,6 +1002,8 @@ impl App {
                 hash: article.hash.clone(),
                 read: true,
             });
+            self.pending_read_mutations
+                .insert(article.hash.clone(), true);
             if let Some(local) = self.articles.iter_mut().find(|a| a.hash == article.hash) {
                 local.read = true;
             }
@@ -1034,9 +1050,7 @@ impl App {
             View::ArticleList => {
                 self.render_article_list(width, content_height, &mut content_lines)
             }
-            View::Article => {
-                self.render_article_view(width, content_height, &mut content_lines)
-            }
+            View::Article => self.render_article_view(width, content_height, &mut content_lines),
             View::Log => self.render_log_view(width, content_height, &mut content_lines),
             View::Help => self.render_help(width, content_height, &mut content_lines),
         }
@@ -1357,12 +1371,18 @@ impl App {
     fn reload_feeds_from_cache(&mut self, cache: &Cache) {
         let mut latest_ts = None;
         let mut latest_str = None;
+        let pending_read_mutations = &self.pending_read_mutations;
         for row in &mut self.feeds {
             let hashes = cache.get_feed_index(&row.url).unwrap_or_default();
             row.total = hashes.len();
             row.unread = hashes
                 .iter()
-                .filter(|hash| cache.get_article(hash).map(|a| !a.read).unwrap_or(false))
+                .filter(|hash| {
+                    cache
+                        .get_article(hash)
+                        .map(|a| Self::is_unread_with_pending(&a, pending_read_mutations))
+                        .unwrap_or(false)
+                })
                 .count();
             if let Some(meta) = cache.get_feed_meta(&row.url) {
                 row.last_updated = normalize_datetime_to_local(&meta.last_fetched);
@@ -1392,6 +1412,8 @@ impl App {
                         .collect();
                 }
                 FeedScope::All | FeedScope::Unread => {
+                    let unread_only = matches!(scope, FeedScope::Unread);
+                    let pending_read_mutations = &self.pending_read_mutations;
                     let per_feed_articles: Vec<Vec<Article>> = self
                         .feeds
                         .iter()
@@ -1401,7 +1423,10 @@ impl App {
                                 .unwrap_or_default()
                                 .iter()
                                 .filter_map(|hash| cache.get_article(hash))
-                                .filter(|a| matches!(scope, FeedScope::All) || !a.read)
+                                .filter(|a| {
+                                    !unread_only
+                                        || Self::is_unread_with_pending(a, pending_read_mutations)
+                                })
                                 .collect::<Vec<_>>()
                         })
                         .collect();
@@ -1423,6 +1448,7 @@ impl App {
                 }
             }
         }
+        Self::apply_pending_read_mutations(&mut self.articles, &self.pending_read_mutations);
         let unread_oldest_first =
             matches!(self.selected_feed_scope.as_ref(), Some(FeedScope::Unread));
         self.articles.sort_by(|a, b| {
@@ -1439,6 +1465,41 @@ impl App {
             self.selected_article = visible_len.saturating_sub(1);
         }
         self.ensure_selected_article_visible(visible_len);
+    }
+
+    fn feed_unread_count_from_cache(&self, cache: &Cache, feed_url: &str) -> usize {
+        cache
+            .get_feed_index(feed_url)
+            .unwrap_or_default()
+            .iter()
+            .filter(|hash| {
+                cache
+                    .get_article(hash)
+                    .map(|a| Self::is_unread_with_pending(&a, &self.pending_read_mutations))
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    fn is_unread_with_pending(
+        article: &Article,
+        pending_read_mutations: &HashMap<String, bool>,
+    ) -> bool {
+        !pending_read_mutations
+            .get(&article.hash)
+            .copied()
+            .unwrap_or(article.read)
+    }
+
+    fn apply_pending_read_mutations(
+        articles: &mut [Article],
+        pending_read_mutations: &HashMap<String, bool>,
+    ) {
+        for article in articles {
+            if let Some(read) = pending_read_mutations.get(&article.hash).copied() {
+                article.read = read;
+            }
+        }
     }
 
     fn recount_current_feed_unread(&mut self) {
@@ -1732,7 +1793,11 @@ where
         return None;
     }
 
-    for (idx, &vi) in visible_indices.iter().enumerate().skip(selected_visible_idx + 1) {
+    for (idx, &vi) in visible_indices
+        .iter()
+        .enumerate()
+        .skip(selected_visible_idx + 1)
+    {
         if is_unread(vi) {
             return Some(idx);
         }
@@ -1745,7 +1810,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::find_next_unread_visible_index;
+    use super::*;
+    use crate::cache::Cache;
+    use crate::config::{Config, FeedConfig, Theme, UiConfig};
+    use crate::feed::FeedMeta;
+    use std::sync::mpsc;
+    use tempfile::tempdir;
+
+    const FEED_URL: &str = "https://example.com/feed";
+    const FEED_NAME: &str = "Example Feed";
+    const ARTICLE_HASH: &str = "a1";
 
     #[test]
     fn next_unread_scans_downward_first() {
@@ -1769,6 +1843,109 @@ mod tests {
         let unread = [false, false, false, false, false];
         let next = find_next_unread_visible_index(&visible, 2, |article_idx| unread[article_idx]);
         assert_eq!(next, None);
+    }
+
+    #[test]
+    fn pending_read_survives_refresh_reload_before_backend_ack() {
+        let dir = tempdir().expect("tempdir");
+        let cache = Cache::open_at(dir.path().join("test.redb")).expect("cache");
+        seed_cache(&cache, false);
+        let config = test_config();
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+        let mut app = App::new(&config, &cache, true);
+        app.selected_feed_scope = Some(FeedScope::Feed(FEED_URL.to_string()));
+        app.reload_articles(&cache);
+
+        app.toggle_current_read(&cache, &cmd_tx);
+        assert!(app.articles[0].read);
+
+        app.pending_user_fetches = 1;
+        app.handle_backend(
+            BackendResponse::FeedArticles {
+                feed_url: FEED_URL.to_string(),
+                feed_name: FEED_NAME.to_string(),
+                fetched_at: "2026-04-29 12:00:00".to_string(),
+                articles: Vec::new(),
+                total: 1,
+                unread: 1,
+            },
+            &cache,
+        );
+
+        assert!(app.articles[0].read);
+        assert_eq!(app.feeds[0].unread, 0);
+        assert_eq!(
+            app.pending_read_mutations.get(ARTICLE_HASH).copied(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn stale_article_mutation_does_not_override_newer_pending_toggle() {
+        let dir = tempdir().expect("tempdir");
+        let cache = Cache::open_at(dir.path().join("test.redb")).expect("cache");
+        seed_cache(&cache, false);
+        let config = test_config();
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+        let mut app = App::new(&config, &cache, true);
+        app.selected_feed_scope = Some(FeedScope::Feed(FEED_URL.to_string()));
+        app.reload_articles(&cache);
+
+        app.toggle_current_read(&cache, &cmd_tx);
+        app.toggle_current_read(&cache, &cmd_tx);
+
+        app.handle_backend(
+            BackendResponse::ArticleMutation {
+                hash: ARTICLE_HASH.to_string(),
+                read: true,
+            },
+            &cache,
+        );
+        assert!(!app.articles[0].read);
+        assert_eq!(
+            app.pending_read_mutations.get(ARTICLE_HASH).copied(),
+            Some(false)
+        );
+
+        app.handle_backend(
+            BackendResponse::ArticleMutation {
+                hash: ARTICLE_HASH.to_string(),
+                read: false,
+            },
+            &cache,
+        );
+        assert!(!app.articles[0].read);
+        assert!(!app.pending_read_mutations.contains_key(ARTICLE_HASH));
+    }
+
+    fn test_config() -> Config {
+        Config {
+            ui: UiConfig::default(),
+            theme: Theme::default(),
+            feeds: vec![FeedConfig {
+                name: FEED_NAME.to_string(),
+                url: FEED_URL.to_string(),
+            }],
+        }
+    }
+
+    fn seed_cache(cache: &Cache, read: bool) {
+        cache.put_articles(&[Article {
+            hash: ARTICLE_HASH.to_string(),
+            title: "First".to_string(),
+            link: "https://example.com/1".to_string(),
+            description: "desc".to_string(),
+            content: "content".to_string(),
+            published: Some("2026-04-29 10:00:00".to_string()),
+            feed_name: FEED_NAME.to_string(),
+            read,
+        }]);
+        cache.put_feed_index(FEED_URL, &[ARTICLE_HASH.to_string()]);
+        cache.put_feed_meta(&FeedMeta {
+            url: FEED_URL.to_string(),
+            title: FEED_NAME.to_string(),
+            last_fetched: "2026-04-29 11:00:00".to_string(),
+        });
     }
 }
 
