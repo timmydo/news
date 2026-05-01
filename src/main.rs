@@ -133,7 +133,6 @@ fn main() {
     };
 
     if opts.fetch_and_quit {
-        let total_feeds = config.feeds.len();
         let (cmd_tx, resp_rx) = backend::spawn(&config, cache.clone());
         if let Err(e) = cmd_tx.send(backend::BackendCommand::FetchAllFeeds) {
             log::error(format!("failed to request fetch-all: {}", e));
@@ -141,32 +140,26 @@ fn main() {
             std::process::exit(1);
         }
 
-        let mut completed = 0usize;
         let mut had_errors = false;
-        while completed < total_feeds {
+        loop {
             match resp_rx.recv() {
-                Ok(backend::BackendResponse::FeedArticles {
-                    feed_name,
-                    feed_url,
-                    articles,
-                    total,
-                    unread,
-                    ..
-                }) => {
-                    completed += 1;
-                    eprintln!(
-                        "Fetched {} ({}) new={} total={} unread={}",
-                        feed_name,
-                        feed_url,
-                        articles.len(),
-                        total,
-                        unread
-                    );
-                }
-                Ok(backend::BackendResponse::FetchError { feed_url, error }) => {
-                    completed += 1;
-                    had_errors = true;
-                    eprintln!("Fetch error {}: {}", feed_url, error);
+                Ok(backend::BackendResponse::RefreshCompleted { reports }) => {
+                    for report in reports {
+                        if let Some(error) = report.error {
+                            had_errors = true;
+                            eprintln!("Fetch error {}: {}", report.feed_url, error);
+                        } else {
+                            eprintln!(
+                                "Fetched {} ({}) new={} total={} unread={}",
+                                report.feed_name,
+                                report.feed_url,
+                                report.new_articles,
+                                report.total,
+                                report.unread
+                            );
+                        }
+                    }
+                    break;
                 }
                 Ok(_) => {}
                 Err(e) => {

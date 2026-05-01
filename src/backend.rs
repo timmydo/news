@@ -1,9 +1,9 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::cache::Cache;
+use crate::cache::{Cache, FeedRefresh, FeedRefreshSummary};
 use crate::config::Config;
-use crate::feed::{datetime_sort_key, now_local_datetime_string, Article, FeedMeta};
+use crate::feed::{datetime_sort_key, now_local_datetime_string};
 use crate::log;
 use chrono::Local;
 
@@ -16,25 +16,19 @@ pub enum BackendCommand {
 }
 
 pub enum BackendResponse {
-    FeedArticles {
-        feed_url: String,
-        feed_name: String,
-        fetched_at: String,
-        articles: Vec<Article>,
-        total: usize,
-        unread: usize,
-    },
-    FetchError {
-        feed_url: String,
-        error: String,
-    },
-    ArticleMutation {
-        hash: String,
-        read: bool,
-    },
-    FeedMarkedRead {
-        feed_url: String,
-    },
+    RefreshCompleted { reports: Vec<FeedRefreshReport> },
+    ArticleMutation { hash: String, read: bool },
+    FeedMarkedRead { feed_url: String },
+}
+
+pub struct FeedRefreshReport {
+    pub feed_url: String,
+    pub feed_name: String,
+    pub fetched_at: Option<String>,
+    pub new_articles: usize,
+    pub total: usize,
+    pub unread: usize,
+    pub error: Option<String>,
 }
 
 pub fn spawn(
@@ -75,18 +69,13 @@ fn backend_loop(
                 BackendCommand::FetchAllFeeds => {
                     log::info("backend command: FetchAllFeeds");
                     log::news("manual refresh: all feeds");
-                    for feed in feeds {
-                        fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
-                    }
+                    let reports = refresh_feeds(feeds.iter(), cache);
+                    let _ = resp_tx.send(BackendResponse::RefreshCompleted { reports });
                 }
                 BackendCommand::FetchFeed { url } => {
                     log::info(format!("backend command: FetchFeed {}", url));
-                    let name = feeds
-                        .iter()
-                        .find(|f| f.url == url)
-                        .map(|f| f.name.as_str())
-                        .unwrap_or("Unknown");
-                    fetch_one_feed(&url, name, cache, &resp_tx);
+                    let reports = refresh_feeds(feeds.iter().filter(|feed| feed.url == url), cache);
+                    let _ = resp_tx.send(BackendResponse::RefreshCompleted { reports });
                 }
                 BackendCommand::MarkRead { hash, read } => {
                     log::info(format!("backend command: MarkRead {} => {}", hash, read));
@@ -112,10 +101,8 @@ fn backend_loop(
                 }
                 log::info(format!("backend periodic refresh: {} due", due.len()));
                 log::news(format!("scheduled refresh: {} due feed(s)", due.len()));
-                for idx in due {
-                    let feed = &feeds[idx];
-                    fetch_one_feed(&feed.url, &feed.name, cache, &resp_tx);
-                }
+                let reports = refresh_feeds(due.into_iter().map(|idx| &feeds[idx]), cache);
+                let _ = resp_tx.send(BackendResponse::RefreshCompleted { reports });
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 log::warn("backend command channel disconnected");
@@ -188,76 +175,84 @@ fn next_refresh_timeout(
     Duration::from_secs(min_remaining as u64)
 }
 
-fn fetch_one_feed(url: &str, name: &str, cache: &Cache, resp_tx: &mpsc::Sender<BackendResponse>) {
+fn refresh_feeds<'a, I>(feeds: I, cache: &Cache) -> Vec<FeedRefreshReport>
+where
+    I: IntoIterator<Item = &'a crate::config::FeedConfig>,
+{
+    let mut refreshes = Vec::new();
+    let mut report_order = Vec::new();
+
+    for feed in feeds {
+        match fetch_one_feed(&feed.url, &feed.name) {
+            Ok(refresh) => {
+                report_order.push(Ok(refresh.url.clone()));
+                refreshes.push(refresh);
+            }
+            Err(error) => {
+                report_order.push(Err(FeedRefreshReport {
+                    feed_url: feed.url.clone(),
+                    feed_name: feed.name.clone(),
+                    fetched_at: None,
+                    new_articles: 0,
+                    total: 0,
+                    unread: 0,
+                    error: Some(error),
+                }));
+            }
+        }
+    }
+
+    let mut summaries_by_url = cache
+        .apply_refresh_batch(&refreshes)
+        .into_iter()
+        .map(|summary| (summary.feed_url.clone(), summary))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    report_order
+        .into_iter()
+        .filter_map(|item| match item {
+            Ok(url) => summaries_by_url.remove(&url).map(report_from_summary),
+            Err(report) => Some(report),
+        })
+        .collect()
+}
+
+fn report_from_summary(summary: FeedRefreshSummary) -> FeedRefreshReport {
+    log::info(format!(
+        "fetch success: {} ({}) new={} total={} unread={}",
+        summary.feed_name, summary.feed_url, summary.new_articles, summary.total, summary.unread
+    ));
+    log::news(format!(
+        "refresh done: {} ({}) new={} total={} unread={}",
+        summary.feed_name, summary.feed_url, summary.new_articles, summary.total, summary.unread
+    ));
+
+    FeedRefreshReport {
+        feed_url: summary.feed_url,
+        feed_name: summary.feed_name,
+        fetched_at: Some(summary.fetched_at),
+        new_articles: summary.new_articles,
+        total: summary.total,
+        unread: summary.unread,
+        error: None,
+    }
+}
+
+fn fetch_one_feed(url: &str, name: &str) -> Result<FeedRefresh, String> {
     log::info(format!("fetch start: {} ({})", name, url));
     log::news(format!("refresh start: {} ({})", name, url));
     match crate::feed::fetch_feed(url, name) {
-        Ok((title, articles)) => {
-            let fetched_at = now_local_datetime_string();
-            cache.put_feed_meta(&FeedMeta {
-                url: url.to_string(),
-                title,
-                last_fetched: fetched_at.clone(),
-            });
-
-            // Deduplicate against cache
-            let new_articles: Vec<_> = articles
-                .into_iter()
-                .filter(|a| !cache.article_exists(&a.hash))
-                .collect();
-
-            // Store in cache
-            if !new_articles.is_empty() {
-                cache.put_articles(&new_articles);
-            }
-
-            // Update feed index
-            let mut hashes = cache.get_feed_index(url).unwrap_or_default();
-            for a in &new_articles {
-                if !hashes.contains(&a.hash) {
-                    hashes.insert(0, a.hash.clone());
-                }
-            }
-            cache.put_feed_index(url, &hashes);
-
-            let unread = hashes
-                .iter()
-                .filter(|h| cache.get_article(h).map(|a| !a.read).unwrap_or(false))
-                .count();
-
-            log::info(format!(
-                "fetch success: {} ({}) new={} total={} unread={}",
-                name,
-                url,
-                new_articles.len(),
-                hashes.len(),
-                unread
-            ));
-            log::news(format!(
-                "refresh done: {} ({}) new={} total={} unread={}",
-                name,
-                url,
-                new_articles.len(),
-                hashes.len(),
-                unread
-            ));
-
-            let _ = resp_tx.send(BackendResponse::FeedArticles {
-                feed_url: url.to_string(),
-                feed_name: name.to_string(),
-                fetched_at,
-                articles: new_articles,
-                total: hashes.len(),
-                unread,
-            });
-        }
+        Ok((title, articles)) => Ok(FeedRefresh {
+            url: url.to_string(),
+            name: name.to_string(),
+            title,
+            fetched_at: now_local_datetime_string(),
+            articles,
+        }),
         Err(e) => {
             log::error(format!("fetch error: {} ({}) {}", name, url, e));
             log::news(format!("refresh error: {} ({}) {}", name, url, e));
-            let _ = resp_tx.send(BackendResponse::FetchError {
-                feed_url: url.to_string(),
-                error: e,
-            });
+            Err(e)
         }
     }
 }
