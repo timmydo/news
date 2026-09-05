@@ -7,20 +7,34 @@ use std::sync::{Mutex, OnceLock};
 static NEWS_LOGGER: OnceLock<Result<Mutex<File>, String>> = OnceLock::new();
 static DEBUG_LOGGER: OnceLock<Result<Mutex<File>, String>> = OnceLock::new();
 
-pub fn news_log_path() -> PathBuf {
+/// Where the logs live: a directory a test names, so a test that logs
+/// writes nowhere near a person's own logs; otherwise the cache home.
+static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+fn log_dir() -> PathBuf {
+    if let Some(dir) = LOG_DIR.get() {
+        return dir.clone();
+    }
     let xdg = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| {
         let home = std::env::var("HOME").unwrap_or_default();
         format!("{}/.cache", home)
     });
-    PathBuf::from(xdg).join("tn").join("news.log")
+    PathBuf::from(xdg).join("tn")
+}
+
+/// Sends every log of this process to `dir`, once; a later call keeps the
+/// first directory, so tests that share a process share it.
+#[cfg(test)]
+pub fn use_log_dir(dir: PathBuf) -> PathBuf {
+    LOG_DIR.get_or_init(|| dir).clone()
+}
+
+pub fn news_log_path() -> PathBuf {
+    log_dir().join("news.log")
 }
 
 pub fn debug_log_path() -> PathBuf {
-    let xdg = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{}/.cache", home)
-    });
-    PathBuf::from(xdg).join("tn").join("debug.log")
+    log_dir().join("debug.log")
 }
 
 pub fn init() -> Result<(), String> {

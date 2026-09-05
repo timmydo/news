@@ -30,7 +30,7 @@ Example:
 page_size = 100
 scrolloff = 0
 mouse = true
-sync_interval_secs = 300
+sync_interval_secs = 300   # at least 30; 0 turns the automatic refresh off
 
 [theme]
 bg = "#002b36"

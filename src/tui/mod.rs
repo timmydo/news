@@ -2,7 +2,10 @@ mod input;
 mod screen;
 pub mod views;
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -44,6 +47,36 @@ enum FeedScope {
 enum LogTab {
     News,
     Debug,
+}
+
+/// What is known of a log's lines: the length counted so far, the
+/// newlines in it, and whether it ended in one, so a log that grew is
+/// counted onward from where the last count stopped.
+#[derive(Clone, Copy)]
+struct LogCount {
+    len: u64,
+    newlines: usize,
+    ends_with_newline: bool,
+}
+
+impl LogCount {
+    const NONE: LogCount = LogCount {
+        len: 0,
+        newlines: 0,
+        ends_with_newline: true,
+    };
+
+    /// Lines as `str::lines` counts them: an unterminated last line is one.
+    fn total(self) -> usize {
+        self.newlines + usize::from(self.len > 0 && !self.ends_with_newline)
+    }
+}
+
+fn log_tab_index(tab: LogTab) -> usize {
+    match tab {
+        LogTab::News => 0,
+        LogTab::Debug => 1,
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -111,6 +144,11 @@ struct App {
     theme: UiTheme,
     log_tab: LogTab,
     log_scroll: usize,
+    /// The line count of each log, so a frame counts only what grew.
+    log_count: [Cell<Option<LogCount>>; 2],
+    /// Where each log view's first line began, so a frame resumes its
+    /// scan there rather than at the file's start.
+    log_window_hint: [Cell<Option<(usize, u64)>>; 2],
     quitting: bool,
     pending_redraw: bool,
     mouse_config: bool,
@@ -191,6 +229,8 @@ impl App {
             theme: UiTheme::from_config(&config.theme),
             log_tab: LogTab::News,
             log_scroll: 0,
+            log_count: [Cell::new(None), Cell::new(None)],
+            log_window_hint: [Cell::new(None), Cell::new(None)],
             quitting: false,
             pending_redraw: true,
             mouse_config: config.ui.mouse,
@@ -1106,7 +1146,7 @@ impl App {
                 (
                     "[All]".to_string(),
                     self.last_updated.clone().unwrap_or_else(|| "-".to_string()),
-                    self.total_articles(),
+                    self.total_articles().to_string(),
                     self.total_unread(),
                     false,
                 )
@@ -1114,7 +1154,7 @@ impl App {
                 (
                     "[Unread]".to_string(),
                     self.last_updated.clone().unwrap_or_else(|| "-".to_string()),
-                    self.total_unread(),
+                    self.total_unread().to_string(),
                     self.total_unread(),
                     false,
                 )
@@ -1122,7 +1162,8 @@ impl App {
                 (
                     "[Log]".to_string(),
                     "-".to_string(),
-                    self.current_log_entry_count(),
+                    self.current_log_entry_count()
+                        .map_or_else(|| "?".to_string(), |count| count.to_string()),
                     0,
                     false,
                 )
@@ -1131,7 +1172,7 @@ impl App {
                 (
                     feed.name.clone(),
                     feed.last_updated.clone().unwrap_or_else(|| "-".to_string()),
-                    feed.total,
+                    feed.total.to_string(),
                     feed.unread,
                     feed.last_error.is_some(),
                 )
@@ -1341,39 +1382,61 @@ impl App {
         lines.push(self.style_status(views::truncate(&self.status, width)));
     }
 
+    /// The log view shows one window of the file, read line by line, so a
+    /// log of any size costs a frame one window's worth of memory: the
+    /// whole file in one string was the allocation that ended a session.
     fn render_log_view(&self, width: usize, height: usize, lines: &mut Vec<String>) {
-        let (label, path) = match self.log_tab {
-            LogTab::News => ("[News Log]", crate::log::news_log_path()),
-            LogTab::Debug => ("[Debug Log]", crate::log::debug_log_path()),
+        let label = match self.log_tab {
+            LogTab::News => "[News Log]",
+            LogTab::Debug => "[Debug Log]",
         };
+        let path = self.log_path();
         lines.push(self.style_header(views::truncate(
             &format!("{} (n news, d debug, j/k scroll, PgUp/PgDn, q back)", label),
             width,
         )));
 
-        let log_text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| format!("Could not read {} ({})", path.display(), e));
-        let rendered: Vec<String> = if log_text.is_empty() {
-            vec!["Log is empty".to_string()]
-        } else {
-            log_text
-                .lines()
-                .map(|line| views::truncate(line, width))
-                .collect()
-        };
-
+        let total = self.current_log_entry_count();
         let body_rows = height.saturating_sub(2);
         let start = self
             .log_scroll
-            .min(rendered.len().saturating_sub(body_rows.max(1)));
-        for line in rendered.iter().skip(start).take(body_rows) {
-            lines.push(line.clone());
+            .min(total.unwrap_or(0).saturating_sub(body_rows.max(1)));
+        // Resume from the last frame's first line when it is not past this
+        // one's; the count drops the hint of a log that shrank.
+        let hint = &self.log_window_hint[log_tab_index(self.log_tab)];
+        let from = hint
+            .get()
+            .filter(|&(index, _)| index <= start)
+            .unwrap_or((0, 0));
+        let window = match total {
+            // No rows for a body: nothing read, and nothing said of it.
+            _ if body_rows == 0 => Some(Vec::new()),
+            Some(0) => Some(vec!["Log is empty".to_string()]),
+            Some(_) => log_window(&path, start, body_rows, width, from).map(|(window, first)| {
+                hint.set(Some(first));
+                window
+            }),
+            None => None,
+        };
+        // A count kept from a frame that could read the log says nothing
+        // for one that cannot.
+        let total = if window.is_none() { None } else { total };
+        match window {
+            Some(window) => lines.extend(window),
+            None => lines.push(views::truncate(
+                &format!("Could not read {}", path.display()),
+                width,
+            )),
         }
         while lines.len() + 1 < height {
             lines.push(String::new());
         }
         lines.push(self.style_status(views::truncate(
-            &format!("{} lines | {}", rendered.len(), path.display()),
+            &format!(
+                "{} lines | {}",
+                total.map_or_else(|| "?".to_string(), |total| total.to_string()),
+                path.display()
+            ),
             width,
         )));
     }
@@ -1696,14 +1759,22 @@ impl App {
         self.feeds.iter().map(|f| f.unread).sum()
     }
 
-    fn current_log_entry_count(&self) -> usize {
-        let path = match self.log_tab {
+    fn log_path(&self) -> PathBuf {
+        match self.log_tab {
             LogTab::News => crate::log::news_log_path(),
             LogTab::Debug => crate::log::debug_log_path(),
-        };
-        std::fs::read_to_string(path)
-            .map(|content| content.lines().count())
-            .unwrap_or(0)
+        }
+    }
+
+    /// How many lines the shown log has, or nothing for one that cannot be
+    /// read: `count_log` over this log's kept count and resume point.
+    fn current_log_entry_count(&self) -> Option<usize> {
+        let tab = log_tab_index(self.log_tab);
+        count_log(
+            &self.log_path(),
+            &self.log_count[tab],
+            &self.log_window_hint[tab],
+        )
     }
 
     fn feed_list_rows(&self) -> usize {
@@ -1952,6 +2023,146 @@ fn refresh_status(
     }
 }
 
+/// The scanner's read size: the most of a log a frame holds at once.
+const LOG_CHUNK: usize = 64 * 1024;
+
+/// The log's line count, kept in `known` and counted onward from the
+/// length already counted, the log being written only by appending. A
+/// log shorter than the one counted was truncated: its count and the
+/// view's resume point in `hint` are dropped, since the bytes there are
+/// not what they were, and it is counted afresh. A log truncated and
+/// regrown past its counted length between two frames is not told
+/// apart. Nothing for a log that cannot be read: one still as long as
+/// the one counted keeps its count, the bytes counted being there yet,
+/// and one that is not there keeps nothing.
+fn count_log(
+    path: &std::path::Path,
+    known: &Cell<Option<LogCount>>,
+    hint: &Cell<Option<(usize, u64)>>,
+) -> Option<usize> {
+    // A log that is not there is not the one counted: what comes to the
+    // path next is counted from its start.
+    let Some(len) = std::fs::metadata(path).ok().map(|meta| meta.len()) else {
+        known.set(None);
+        hint.set(None);
+        return None;
+    };
+    let counted = known.get().filter(|counted| counted.len <= len);
+    if counted.is_none() {
+        known.set(None);
+        hint.set(None);
+    }
+    if let Some(counted) = counted.filter(|counted| counted.len == len) {
+        return Some(counted.total());
+    }
+    let mut count = counted.unwrap_or(LogCount::NONE);
+    let (newlines, last, read) = count_newlines_from(path, count.len)?;
+    count.newlines += newlines;
+    count.len += read;
+    if let Some(last) = last {
+        count.ends_with_newline = last;
+    }
+    known.set(Some(count));
+    Some(count.total())
+}
+
+/// Newlines from byte `from` of the file to its end, whether the last byte
+/// read was one, and how many bytes were read; nothing for a file that
+/// cannot be read, which is not a count.
+fn count_newlines_from(path: &std::path::Path, from: u64) -> Option<(usize, Option<bool>, u64)> {
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = vec![0u8; LOG_CHUNK];
+    let (mut newlines, mut last, mut read_total) = (0usize, None, 0u64);
+    loop {
+        let read = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => return None,
+        };
+        let chunk = buf.get(..read).unwrap_or_default();
+        newlines += chunk.iter().filter(|&&byte| byte == b'\n').count();
+        last = chunk.last().map(|&byte| byte == b'\n');
+        read_total += read as u64;
+    }
+    Some((newlines, last, read_total))
+}
+
+/// `rows` lines of the log from line `start`, each cut to `width` columns,
+/// read through one buffer from `from`, a line's index and the offset it
+/// begins at, which may be the file's start or a line already found: a
+/// line keeps at most the bytes `width` columns can need, so a line of any
+/// length costs a frame a bounded amount, the lines skipped keep nothing,
+/// and a line the log wrote in bytes that are not UTF-8 shows with the
+/// replacement character. With the window comes where its first line
+/// began, for the next frame to resume from. Nothing for a file that
+/// cannot be read.
+fn log_window(
+    path: &std::path::Path,
+    start: usize,
+    rows: usize,
+    width: usize,
+    from: (usize, u64),
+) -> Option<(Vec<String>, (usize, u64))> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let (mut index, mut position) = from;
+    file.seek(SeekFrom::Start(position)).ok()?;
+    // Four bytes a character is the most UTF-8 needs.
+    let keep = width.saturating_mul(4);
+    let mut buf = vec![0u8; LOG_CHUNK];
+    let mut window = Vec::with_capacity(rows);
+    let mut line: Vec<u8> = Vec::new();
+    let mut line_start = position;
+    let mut first = None;
+    let mut open = false;
+    while window.len() < rows {
+        let read = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => return None,
+        };
+        let mut chunk = buf.get(..read).unwrap_or_default();
+        while !chunk.is_empty() && window.len() < rows {
+            let end = chunk.iter().position(|&byte| byte == b'\n');
+            let piece = chunk.get(..end.unwrap_or(chunk.len())).unwrap_or_default();
+            if index >= start {
+                first.get_or_insert((index, line_start));
+                let room = keep.saturating_sub(line.len());
+                line.extend_from_slice(piece.get(..piece.len().min(room)).unwrap_or_default());
+            }
+            open = true;
+            match end {
+                Some(at) => {
+                    if index >= start {
+                        window.push(finish_log_line(&mut line, width));
+                    }
+                    index += 1;
+                    open = false;
+                    position += at as u64 + 1;
+                    line_start = position;
+                    chunk = chunk.get(at + 1..).unwrap_or_default();
+                }
+                None => {
+                    position += piece.len() as u64;
+                    chunk = &[];
+                }
+            }
+        }
+    }
+    if open && index >= start && window.len() < rows {
+        first.get_or_insert((index, line_start));
+        window.push(finish_log_line(&mut line, width));
+    }
+    Some((window, first.unwrap_or((index, line_start))))
+}
+
+fn finish_log_line(line: &mut Vec<u8>, width: usize) -> String {
+    let text = String::from_utf8_lossy(line);
+    let shown = views::truncate(text.trim_end_matches('\r'), width);
+    line.clear();
+    shown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1964,6 +2175,120 @@ mod tests {
     const FEED_URL: &str = "https://example.com/feed";
     const FEED_NAME: &str = "Example Feed";
     const ARTICLE_HASH: &str = "a1";
+
+    #[test]
+    fn a_log_is_counted_and_shown_in_bounded_pieces() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log");
+        let count = |from: u64| count_newlines_from(&path, from).unwrap();
+        let total = |from: u64, known: LogCount| {
+            let (newlines, last, read) = count(from);
+            LogCount {
+                len: known.len + read,
+                newlines: known.newlines + newlines,
+                ends_with_newline: last.unwrap_or(known.ends_with_newline),
+            }
+        };
+        for (content, expected) in [("", 0), ("a\n", 1), ("a\nb", 2), ("a\nb\n", 2), ("\n\n", 2)] {
+            std::fs::write(&path, content).unwrap();
+            assert_eq!(total(0, LogCount::NONE).total(), expected, "{content:?}");
+            assert_eq!(content.lines().count(), expected, "{content:?}");
+        }
+        // A log that grew is counted onward from where the count stopped.
+        std::fs::write(&path, "a\nb").unwrap();
+        let known = total(0, LogCount::NONE);
+        assert_eq!((known.len, known.total()), (3, 2));
+        std::fs::write(&path, "a\nb\nc\n").unwrap();
+        let grown = total(known.len, known);
+        assert_eq!((grown.len, grown.total()), (6, 3));
+        // A window: cut to the width, a carriage return dropped, bytes that
+        // are not UTF-8 replaced, past the read size, and the last line
+        // unterminated.
+        let mut big = "x\n".repeat(100_000).into_bytes();
+        big.extend_from_slice(b"wide\xffline\r\nlast");
+        std::fs::write(&path, &big).unwrap();
+        assert_eq!(total(0, LogCount::NONE).total(), 100_002);
+        let window =
+            |start, rows, width, from| log_window(&path, start, rows, width, from).unwrap();
+        assert_eq!(
+            window(99_999, 5, 3, (0, 0)),
+            (
+                vec!["x".to_string(), "wid".into(), "las".into()],
+                (99_999, 199_998)
+            )
+        );
+        // Resumed from a line already found, the same window.
+        assert_eq!(
+            window(100_000, 1, 80, (99_999, 199_998)),
+            (vec!["wide\u{FFFD}line".to_string()], (100_000, 200_000))
+        );
+        assert_eq!(window(100_002, 5, 80, (0, 0)).0, Vec::<String>::new());
+        // The resume point is used, not merely consistent with a scan from
+        // the start; and with three-byte lines, 65,536 being one past a
+        // multiple of three, window lines straddle the reads.
+        std::fs::write(&path, "a\nb\nc\n").unwrap();
+        assert_eq!(window(0, 3, 80, (0, 4)).0, ["c"]);
+        std::fs::write(&path, "ab\n".repeat(60_000)).unwrap();
+        let found = window(50_000, 3, 80, (0, 0));
+        assert_eq!(found, (vec!["ab".to_string(); 3], (50_000, 150_000)));
+        assert_eq!(window(50_001, 1, 80, found.1).1, (50_001, 150_003));
+        // Lines that straddle the read size, terminated and not: a count
+        // that closed each chunk's last line would be off by the chunks.
+        let straddling = "ab\n".repeat(50_000);
+        std::fs::write(&path, &straddling).unwrap();
+        assert_eq!(total(0, LogCount::NONE).total(), straddling.lines().count());
+        let unterminated = format!("{}tail", "y\n".repeat(50_000));
+        std::fs::write(&path, &unterminated).unwrap();
+        assert_eq!(total(0, LogCount::NONE).total(), 50_001);
+        assert_eq!(window(50_000, 2, 80, (0, 0)).0, ["tail"]);
+        // A file that cannot be read is not a count of zero.
+        let missing = dir.path().join("missing");
+        assert!(count_newlines_from(&missing, 0).is_none());
+        assert!(log_window(&missing, 0, 1, 1, (0, 0)).is_none());
+        // The kept count follows growth and starts over, dropping the
+        // view's resume point, when the log shrank.
+        let known = Cell::new(None);
+        let hint = Cell::new(None);
+        std::fs::write(&path, "a\nb\nc\n").unwrap();
+        assert_eq!(count_log(&path, &known, &hint), Some(3));
+        hint.set(Some((2, 4)));
+        std::fs::write(&path, "a\nb\nc\nd").unwrap();
+        assert_eq!(count_log(&path, &known, &hint), Some(4));
+        assert_eq!(hint.get(), Some((2, 4)));
+        std::fs::write(&path, "x\n").unwrap();
+        assert_eq!(count_log(&path, &known, &hint), Some(1));
+        assert_eq!(hint.get(), None);
+        assert_eq!(count_log(&missing, &known, &hint), None);
+        // A shrunk log whose recount fails keeps no count to resume from:
+        // a directory has a length, and a read of it fails. Regrown past
+        // the counted length, the log is counted from its start.
+        let known = Cell::new(None);
+        let hint = Cell::new(None);
+        std::fs::write(&path, "ab\n".repeat(3_000)).unwrap();
+        assert_eq!(count_log(&path, &known, &hint), Some(3_000));
+        hint.set(Some((1_500, 4_500)));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() < 9_000);
+        assert_eq!(count_log(&path, &known, &hint), None);
+        assert_eq!(
+            (known.get().map(|count| count.len), hint.get()),
+            (None, None)
+        );
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, "abcd\n".repeat(2_000)).unwrap();
+        assert_eq!(count_log(&path, &known, &hint), Some(2_000));
+        // Gone, then back and longer: counted from its start too.
+        hint.set(Some((1_000, 5_000)));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(count_log(&path, &known, &hint), None);
+        assert_eq!(
+            (known.get().map(|count| count.len), hint.get()),
+            (None, None)
+        );
+        std::fs::write(&path, "abcde\n".repeat(2_000)).unwrap();
+        assert_eq!(count_log(&path, &known, &hint), Some(2_000));
+    }
 
     #[test]
     fn next_unread_scans_downward_first() {

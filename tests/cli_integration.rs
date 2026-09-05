@@ -51,6 +51,8 @@ fn cli_mode_reads_json_commands_and_returns_json_lines() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_tn"))
         .args(["--cli", "--cache"])
         .arg(&cache_path)
+        // Its logs go with the cache, not to whoever runs the tests.
+        .env("XDG_CACHE_HOME", dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

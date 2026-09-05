@@ -267,7 +267,7 @@ fn print_help_config() {
         "  scrolloff = 0                # min context lines above/below selection (default: 0)"
     );
     eprintln!("  mouse = true                 # enable mouse support (default: true)");
-    eprintln!("  sync_interval_secs = 300     # auto-refresh interval in seconds (default: 300)");
+    eprintln!("  sync_interval_secs = 300     # auto-refresh interval in seconds (default: 300; at least 30; 0 turns it off)");
     eprintln!(
         "  browser = \"command {{url}}\"     # browser command; {{url}} is replaced with the URL"
     );
