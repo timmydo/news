@@ -5,6 +5,7 @@ mod config;
 mod feed;
 mod keybindings;
 mod log;
+mod td_fetch;
 mod tui;
 
 use std::path::PathBuf;

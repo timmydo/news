@@ -29,14 +29,25 @@ pub struct FeedMeta {
 /// Fetch and parse an RSS/Atom feed from the given URL.
 /// Returns the feed title and a list of articles.
 pub fn fetch_feed(url: &str, feed_name: &str) -> Result<(String, Vec<Article>), String> {
-    let resp = ureq::get(url)
-        .timeout(std::time::Duration::from_secs(30))
-        .call()
-        .map_err(|e| format!("fetch {}: {}", url, e))?;
-
-    let body = resp
-        .into_string()
-        .map_err(|e| format!("read body from {}: {}", url, e))?;
+    let body = if crate::td_fetch::available() {
+        // Inside a td jail that carries `sockets=fetch`: the fetch service
+        // holds the network, this program holds a socket (td's
+        // APPLICATIONS.md §W.8). The service names its refusals, and a
+        // status is an answer to be shown, not a transport error.
+        let response =
+            crate::td_fetch::get(url, &[], None).map_err(|e| format!("fetch {}: {}", url, e))?;
+        if !(200..300).contains(&response.status) {
+            return Err(format!("fetch {}: HTTP {}", url, response.status));
+        }
+        String::from_utf8(response.body).map_err(|e| format!("read body from {}: {}", url, e))?
+    } else {
+        let resp = ureq::get(url)
+            .timeout(std::time::Duration::from_secs(30))
+            .call()
+            .map_err(|e| format!("fetch {}: {}", url, e))?;
+        resp.into_string()
+            .map_err(|e| format!("read body from {}: {}", url, e))?
+    };
 
     parse_feed(&body, feed_name)
 }
