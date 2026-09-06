@@ -34,8 +34,8 @@ pub fn fetch_feed(url: &str, feed_name: &str) -> Result<(String, Vec<Article>), 
         // holds the network, this program holds a socket (td's
         // APPLICATIONS.md §W.8). The service names its refusals, and a
         // status is an answer to be shown, not a transport error.
-        let response =
-            crate::td_fetch::get(url, &[], None).map_err(|e| format!("fetch {}: {}", url, e))?;
+        let response = crate::td_fetch::get(url, &[], None, None)
+            .map_err(|e| format!("fetch {}: {}", url, e))?;
         if !(200..300).contains(&response.status) {
             return Err(format!("fetch {}: HTTP {}", url, response.status));
         }
